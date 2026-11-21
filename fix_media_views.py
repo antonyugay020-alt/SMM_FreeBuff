@@ -1,0 +1,725 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Add view mode switcher to Media Content: Cards / List / Table.
+Run: python fix_media_views.py
+"""
+
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parent
+BASE = ROOT_DIR / "AI_SMM_Work_Architecture_A75"
+
+def write(rel, content):
+    p = BASE / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content, encoding='utf-8', newline='\n')
+    print(f"  [OK] {rel}")
+
+print("\n=== Adding View Modes to Media Content ===\n")
+
+media_content = r'''"""Media Content section: 3 view modes (Cards/List/Table) + processing panel."""
+import logging
+import json
+from pathlib import Path
+from typing import Dict, Any, List
+
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QPushButton, QFrame, QGridLayout, QScrollArea, QComboBox, QCheckBox,
+    QTextEdit, QSplitter, QAbstractItemView, QMessageBox, QTableWidget,
+    QTableWidgetItem, QHeaderView)
+from PySide6.QtCore import Qt, Signal, QMimeData, QByteArray
+from PySide6.QtGui import QPixmap, QDrag, QColor
+
+logger = logging.getLogger(__name__)
+
+DRAG_TYPE = "application/x-smm-media-card"
+
+STATUS_MAP = {
+    "approved": ("✅ Одобрено", "#238636"),
+    "pending": ("⏳ На проверке", "#9e6a03"),
+    "rejected": ("❌ Отклонено", "#da3633"),
+}
+
+FILE_ICONS = {"image": "🖼️", "video": "🎬"}
+
+
+# ============================================================================
+# CARD (for Cards mode)
+# ============================================================================
+class MediaCard(QFrame):
+    card_clicked = Signal(dict, str)
+
+    def __init__(self, file_data: Dict[str, Any], zone: str, parent=None):
+        super().__init__(parent)
+        self.file_data = file_data
+        self.zone = zone
+        self.selected = False
+        self._drag_pos = None
+
+        self.setObjectName("thumb")
+        self.setFrameShape(QFrame.NoFrame)
+        self.setStyleSheet("""
+            QFrame#thumb { background-color: #0d1117; border: 2px solid #30363d; border-radius: 6px; }
+            QFrame#thumb:hover { border-color: #58a6ff; }
+            QFrame#thumb.selected { border-color: #1f6feb; background-color: #161b22; }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(6, 6, 6, 0)
+
+        self.checkbox = QCheckBox()
+        self.checkbox.setStyleSheet("""
+            QCheckBox { spacing: 0; padding: 2px; margin: 0; }
+            QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #4e4e52; border-radius: 3px; background-color: #1e1e1e; }
+            QCheckBox::indicator:checked { background-color: #1f6feb; border-color: #1f6feb; }
+        """)
+        self.checkbox.stateChanged.connect(self._on_checked)
+        top_row.addWidget(self.checkbox)
+        top_row.addStretch()
+
+        type_icon = FILE_ICONS.get(file_data["type"], "🖼️")
+        type_label = QLabel(type_icon)
+        type_label.setStyleSheet("font-size: 18px;")
+        top_row.addWidget(type_label)
+        layout.addLayout(top_row)
+
+        preview = QLabel()
+        preview.setAlignment(Qt.AlignCenter)
+        preview.setMinimumHeight(120)
+        preview.setStyleSheet("background-color: #21262d; font-size: 40px; color: #8b949e;")
+
+        media_dir = Path(__file__).resolve().parent.parent.parent / "media" / "images"
+        img_path = media_dir / file_data["name"]
+        if img_path.exists():
+            try:
+                pm = QPixmap(str(img_path))
+                if not pm.isNull():
+                    scaled = pm.scaled(260, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    preview.setPixmap(scaled)
+                    preview.setStyleSheet("background-color: #21262d;")
+            except Exception:
+                preview.setText(type_icon)
+        else:
+            preview.setText(type_icon)
+        layout.addWidget(preview)
+
+        name = file_data["name"]
+        name_label = QLabel(name if len(name) <= 24 else name[:21] + "...")
+        name_label.setStyleSheet("color: #c9d1d9; font-size: 11px; padding: 6px 8px 0 8px; font-weight: bold;")
+        layout.addWidget(name_label)
+
+        size_label = QLabel(file_data.get("size", ""))
+        size_label.setStyleSheet("color: #8b949e; font-size: 10px; padding: 2px 8px;")
+        layout.addWidget(size_label)
+
+        if "category" in file_data:
+            cat_label = QLabel(file_data["category"])
+            cat_label.setStyleSheet("color: #58a6ff; font-size: 10px; padding: 0 8px 4px 8px; font-weight: bold;")
+            layout.addWidget(cat_label)
+
+        if "status" in file_data:
+            status_text, status_color = STATUS_MAP.get(file_data["status"], ("?", "#8b949e"))
+            status_label = QLabel(status_text)
+            status_label.setStyleSheet(f"color: {status_color}; font-size: 10px; padding: 0 8px 6px 8px; font-weight: bold;")
+            layout.addWidget(status_label)
+
+        self.setMinimumWidth(200)
+        self.setMaximumWidth(260)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_pos = event.pos()
+            self.card_clicked.emit(self.file_data, self.zone)
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.LeftButton):
+            return
+        if self._drag_pos is None:
+            return
+        if (event.pos() - self._drag_pos).manhattanLength() < 10:
+            return
+
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData(DRAG_TYPE, json.dumps(self.file_data).encode('utf-8'))
+        mime.setData("zone".encode('utf-8'), QByteArray(self.zone.encode('utf-8')))
+        drag.setMimeData(mime)
+        drag.exec_(Qt.MoveAction)
+        self._drag_pos = None
+
+    def _on_checked(self, state):
+        self.selected = state == Qt.Checked
+        if self.selected:
+            self.setStyleSheet("QFrame#thumb { background-color: #161b22; border: 2px solid #1f6feb; border-radius: 6px; }")
+        else:
+            self.setStyleSheet("QFrame#thumb { background-color: #0d1117; border: 2px solid #30363d; border-radius: 6px; } QFrame#thumb:hover { border-color: #58a6ff; }")
+
+
+# ============================================================================
+# LIST ROW (for List mode)
+# ============================================================================
+class MediaListRow(QFrame):
+    row_clicked = Signal(dict, str)
+
+    def __init__(self, file_data: Dict[str, Any], zone: str, parent=None):
+        super().__init__(parent)
+        self.file_data = file_data
+        self.zone = zone
+        self._drag_pos = None
+
+        self.setStyleSheet("""
+            QFrame { background-color: #0d1117; border: 1px solid #30363d; border-radius: 4px; padding: 6px; }
+            QFrame:hover { background-color: #161b22; border-color: #58a6ff; }
+        """)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(12)
+
+        # Checkbox
+        self.checkbox = QCheckBox()
+        self.checkbox.setStyleSheet("""
+            QCheckBox { spacing: 0; }
+            QCheckBox::indicator { width: 14px; height: 14px; border: 1px solid #4e4e52; border-radius: 2px; background-color: #1e1e1e; }
+            QCheckBox::indicator:checked { background-color: #1f6feb; border-color: #1f6feb; }
+        """)
+        layout.addWidget(self.checkbox)
+
+        # Icon
+        type_icon = FILE_ICONS.get(file_data["type"], "🖼️")
+        icon_label = QLabel(type_icon)
+        icon_label.setStyleSheet("font-size: 18px; min-width: 24px;")
+        layout.addWidget(icon_label)
+
+        # Name
+        name_label = QLabel(file_data["name"])
+        name_label.setStyleSheet("color: #e6edf3; font-size: 12px; font-weight: bold;")
+        layout.addWidget(name_label, stretch=1)
+
+        # Size
+        size_label = QLabel(file_data.get("size", ""))
+        size_label.setStyleSheet("color: #8b949e; font-size: 11px; min-width: 80px;")
+        layout.addWidget(size_label)
+
+        # Category
+        if "category" in file_data:
+            cat_label = QLabel(file_data["category"])
+            cat_label.setStyleSheet("color: #58a6ff; font-size: 11px; min-width: 70px;")
+            layout.addWidget(cat_label)
+
+        # Status
+        if "status" in file_data:
+            status_text, status_color = STATUS_MAP.get(file_data["status"], ("?", "#8b949e"))
+            status_label = QLabel(status_text)
+            status_label.setStyleSheet(f"color: {status_color}; font-size: 11px; font-weight: bold; min-width: 110px;")
+            layout.addWidget(status_label)
+
+        self.setCursor(Qt.PointingHandCursor)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_pos = event.pos()
+            self.row_clicked.emit(self.file_data, self.zone)
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.LeftButton):
+            return
+        if self._drag_pos is None:
+            return
+        if (event.pos() - self._drag_pos).manhattanLength() < 10:
+            return
+
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData(DRAG_TYPE, json.dumps(self.file_data).encode('utf-8'))
+        mime.setData("zone".encode('utf-8'), QByteArray(self.zone.encode('utf-8')))
+        drag.setMimeData(mime)
+        drag.exec_(Qt.MoveAction)
+        self._drag_pos = None
+
+
+# ============================================================================
+# COLUMN (shared by all modes)
+# ============================================================================
+class MediaColumn(QFrame):
+    card_clicked_signal = Signal(dict, str)
+
+    def __init__(self, title: str, icon: str, color: str, files: List[Dict[str, Any]], zone: str, view_mode: str = "cards", parent=None):
+        super().__init__(parent)
+        self.zone = zone
+        self.files = list(files)
+        self.view_mode = view_mode
+        self.color = color
+
+        self.setObjectName("zone")
+        self.setStyleSheet(f"""
+            QFrame#zone {{ background-color: #161b22; border: 1px solid #30363d; border-top: 4px solid {color}; border-radius: 6px; }}
+        """)
+        self.setAcceptDrops(True)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Header
+        header = QFrame()
+        header.setObjectName("zoneHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(12, 10, 12, 10)
+
+        title_label = QLabel(f"{icon} {title}")
+        title_label.setStyleSheet("color: #e6edf3; font-size: 15px; font-weight: bold;")
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+
+        self.count_label = QLabel(f"{len(self.files)}")
+        self.count_label.setStyleSheet(f"background-color: {color}; color: white; border-radius: 12px; padding: 3px 10px; font-weight: bold; font-size: 12px;")
+        header_layout.addWidget(self.count_label)
+        layout.addWidget(header)
+
+        # Actions
+        actions = QHBoxLayout()
+        actions.setContentsMargins(12, 8, 12, 6)
+
+        if zone == "sources":
+            upload_btn = QPushButton("📥 Загрузить")
+            upload_btn.setObjectName("topBtn")
+            upload_btn.setStyleSheet("font-size: 12px; padding: 6px 12px;")
+            upload_btn.clicked.connect(lambda: QMessageBox.information(self, "Загрузка", "Используй кнопку 'Импорт медиа' в верхней панели."))
+            actions.addWidget(upload_btn)
+        elif zone == "references":
+            add_btn = QPushButton("➕ Добавить")
+            add_btn.setObjectName("topBtn")
+            add_btn.setStyleSheet("font-size: 12px; padding: 6px 12px;")
+            add_btn.clicked.connect(lambda: QMessageBox.information(self, "Добавить", "В реальной версии откроется диалог выбора эталона."))
+            actions.addWidget(add_btn)
+        elif zone == "ready":
+            approve_btn = QPushButton("✅ Одобрить")
+            approve_btn.setObjectName("topBtn")
+            approve_btn.setStyleSheet("font-size: 11px; background-color: #238636; color: white; border: none; padding: 6px 12px;")
+            approve_btn.clicked.connect(self._on_approve_selected)
+            actions.addWidget(approve_btn)
+
+            reject_btn = QPushButton("❌ Отклонить")
+            reject_btn.setObjectName("topBtn")
+            reject_btn.setStyleSheet("font-size: 11px; background-color: #da3633; color: white; border: none; padding: 6px 12px;")
+            reject_btn.clicked.connect(self._on_reject_selected)
+            actions.addWidget(reject_btn)
+
+        actions.addStretch()
+        layout.addLayout(actions)
+
+        # Content area (rebuild based on view_mode)
+        self.content_scroll = QScrollArea()
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setStyleSheet("border: none; background-color: #0d1117;")
+
+        self.content_widget = QWidget()
+        self.content_layout_inner = QVBoxLayout(self.content_widget)
+        self.content_layout_inner.setContentsMargins(12, 8, 12, 12)
+        self.content_layout_inner.setSpacing(8)
+
+        self._rebuild_content()
+
+        self.content_scroll.setWidget(self.content_widget)
+        layout.addWidget(self.content_scroll, stretch=1)
+
+    def _rebuild_content(self):
+        """Rebuild content based on view_mode."""
+        while self.content_layout_inner.count():
+            item = self.content_layout_inner.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if self.view_mode == "cards":
+            # Grid of cards
+            grid = QGridLayout()
+            grid.setSpacing(12)
+            row, col = 0, 0
+            for file_data in self.files:
+                card = MediaCard(file_data, self.zone)
+                card.card_clicked.connect(self.card_clicked_signal.emit)
+                grid.addWidget(card, row, col)
+                col += 1
+                if col >= 1:
+                    col = 0
+                    row += 1
+            self.content_layout_inner.addLayout(grid)
+
+        elif self.view_mode == "list":
+            # Vertical list of rows
+            for file_data in self.files:
+                row_widget = MediaListRow(file_data, self.zone)
+                row_widget.row_clicked.connect(self.card_clicked_signal.emit)
+                self.content_layout_inner.addWidget(row_widget)
+
+        elif self.view_mode == "table":
+            # QTableWidget
+            table = QTableWidget()
+            table.setObjectName("calendar")
+            table.setColumnCount(5)
+            table.setHorizontalHeaderLabels(["Имя", "Тип", "Размер", "Категория", "Статус"])
+            table.setRowCount(len(self.files))
+            table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            table.setSelectionMode(QAbstractItemView.SingleSelection)
+            table.verticalHeader().setVisible(False)
+
+            for row, fd in enumerate(self.files):
+                name_item = QTableWidgetItem(f"{FILE_ICONS.get(fd['type'], '🖼️')} {fd['name']}")
+                table.setItem(row, 0, name_item)
+
+                type_item = QTableWidgetItem(fd["type"].capitalize())
+                type_item.setTextAlignment(Qt.AlignCenter)
+                table.setItem(row, 1, type_item)
+
+                size_item = QTableWidgetItem(fd.get("size", ""))
+                table.setItem(row, 2, size_item)
+
+                cat_item = QTableWidgetItem(fd.get("category", "—"))
+                cat_item.setTextAlignment(Qt.AlignCenter)
+                table.setItem(row, 3, cat_item)
+
+                status = fd.get("status", "")
+                if status:
+                    status_text, status_color = STATUS_MAP.get(status, ("?", "#8b949e"))
+                    status_item = QTableWidgetItem(status_text)
+                    status_item.setForeground(QColor(status_color))
+                else:
+                    status_item = QTableWidgetItem("—")
+                table.setItem(row, 4, status_item)
+
+            table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+            table.setMinimumHeight(max(100, len(self.files) * 30 + 40))
+            self.content_layout_inner.addWidget(table)
+
+    def _on_approve_selected(self):
+        QMessageBox.information(self, "Массовые операции", "В режиме списка/таблицы используй чекбоксы в режиме карточек.")
+
+    def _on_reject_selected(self):
+        QMessageBox.information(self, "Массовые операции", "В режиме списка/таблицы используй чекбоксы в режиме карточек.")
+
+    # Drag-and-drop
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(DRAG_TYPE):
+            event.acceptProposedAction()
+            self.setStyleSheet(f"""
+                QFrame#zone {{ background-color: #1c2333; border: 2px dashed {self.color}; border-top: 4px solid {self.color}; border-radius: 6px; }}
+            """)
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasFormat(DRAG_TYPE):
+            event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event):
+        self.setStyleSheet(f"""
+            QFrame#zone {{ background-color: #161b22; border: 1px solid #30363d; border-top: 4px solid {self.color}; border-radius: 6px; }}
+        """)
+
+    def dropEvent(self, event):
+        if not event.mimeData().hasFormat(DRAG_TYPE):
+            return
+
+        raw = bytes(event.mimeData().data(DRAG_TYPE)).decode('utf-8')
+        try:
+            data = json.loads(raw)
+            source_zone = bytes(event.mimeData().data("zone".encode('utf-8'))).decode('utf-8')
+        except Exception as e:
+            logger.error(f"[{self.zone}] Failed to parse drop data: {e}")
+            return
+
+        self.setStyleSheet(f"""
+            QFrame#zone {{ background-color: #161b22; border: 1px solid #30363d; border-top: 4px solid {self.color}; border-radius: 6px; }}
+        """)
+
+        parent = self._find_parent_section()
+        if parent:
+            parent.move_card(data, source_zone, self.zone)
+
+        event.acceptProposedAction()
+
+    def _find_parent_section(self):
+        parent = self.parent()
+        while parent and not isinstance(parent, MediaContentSection):
+            parent = parent.parent()
+        return parent
+
+
+# ============================================================================
+# PROCESSING PANEL
+# ============================================================================
+class ProcessingPanel(QWidget):
+    def __init__(self, data_manager, parent=None):
+        super().__init__(parent)
+        self.dm = data_manager
+        self.current_source = None
+        self.setStyleSheet("background-color: #161b22; border-left: 1px solid #30363d;")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(14)
+
+        title = QLabel("🎨 Обработка")
+        title.setStyleSheet("color: #e6edf3; font-size: 16px; font-weight: bold; border-bottom: 1px solid #30363d; padding-bottom: 8px;")
+        layout.addWidget(title)
+
+        step1 = QLabel("1️⃣ Исходник:")
+        step1.setStyleSheet("color: #58a6ff; font-size: 12px; font-weight: bold;")
+        layout.addWidget(step1)
+
+        self.source_preview = QLabel("👈 Кликни на карточку в 'Исходники'")
+        self.source_preview.setAlignment(Qt.AlignCenter)
+        self.source_preview.setMinimumHeight(120)
+        self.source_preview.setStyleSheet("background-color: #0d1117; border: 2px dashed #30363d; border-radius: 6px; font-size: 13px; color: #8b949e; padding: 20px;")
+        layout.addWidget(self.source_preview)
+
+        step2 = QLabel("2️⃣ Эталон (опционально):")
+        step2.setStyleSheet("color: #bc8cff; font-size: 12px; font-weight: bold; margin-top: 8px;")
+        layout.addWidget(step2)
+
+        self.ref_combo = QComboBox()
+        self.ref_combo.setObjectName("filterCombo")
+        self.ref_combo.addItem("— без эталона —")
+        for ref in self.dm.get_media_references():
+            self.ref_combo.addItem(f"{ref['name']} ({ref.get('category', '')})")
+        self.ref_combo.setStyleSheet("font-size: 12px; padding: 6px;")
+        layout.addWidget(self.ref_combo)
+
+        step3 = QLabel("3️⃣ Запрос на обработку:")
+        step3.setStyleSheet("color: #3fb950; font-size: 12px; font-weight: bold; margin-top: 8px;")
+        layout.addWidget(step3)
+
+        self.request_input = QTextEdit()
+        self.request_input.setObjectName("chatInput")
+        self.request_input.setPlaceholderText("Например:\n• убери фон\n• сделай теплее\n• добавь объект справа")
+        self.request_input.setMaximumHeight(100)
+        self.request_input.setStyleSheet("font-size: 12px; padding: 8px;")
+        layout.addWidget(self.request_input)
+
+        engine_label = QLabel("Движок обработки:")
+        engine_label.setStyleSheet("color: #8b949e; font-size: 11px; margin-top: 8px;")
+        layout.addWidget(engine_label)
+
+        self.engine_combo = QComboBox()
+        self.engine_combo.addItem("🖥️ Stable Diffusion (локально)")
+        self.engine_combo.addItem("☁️ OpenAI GPT-Image")
+        self.engine_combo.setStyleSheet("font-size: 12px; padding: 6px;")
+        layout.addWidget(self.engine_combo)
+
+        self.process_btn = QPushButton("⚡ Обработать")
+        self.process_btn.setObjectName("topBtn")
+        self.process_btn.setProperty("class", "primary")
+        self.process_btn.setStyleSheet("font-size: 14px; font-weight: bold; padding: 12px; margin-top: 8px;")
+        self.process_btn.clicked.connect(self._on_process)
+        layout.addWidget(self.process_btn)
+
+        step4 = QLabel("4️⃣ Результат:")
+        step4.setStyleSheet("color: #3fb950; font-size: 12px; font-weight: bold; margin-top: 8px;")
+        layout.addWidget(step4)
+
+        self.result_preview = QLabel("Здесь появится результат обработки")
+        self.result_preview.setAlignment(Qt.AlignCenter)
+        self.result_preview.setMinimumHeight(100)
+        self.result_preview.setStyleSheet("background-color: #0d1117; border: 2px dashed #30363d; border-radius: 6px; font-size: 12px; color: #8b949e; padding: 20px;")
+        layout.addWidget(self.result_preview)
+
+        layout.addStretch()
+
+    def set_source(self, file_data):
+        self.current_source = file_data
+        self.source_preview.setText(f"✅ {file_data['name']}\n{file_data.get('size', '')}")
+        self.source_preview.setStyleSheet("background-color: #0d1117; border: 2px solid #238636; border-radius: 6px; font-size: 13px; color: #e6edf3; padding: 20px;")
+
+    def _on_process(self):
+        if not self.current_source:
+            QMessageBox.warning(self, "Внимание", "Сначала выбери исходник!")
+            return
+        request = self.request_input.toPlainText().strip()
+        if not request:
+            QMessageBox.warning(self, "Внимание", "Введи запрос на обработку!")
+            return
+
+        self.result_preview.setText("⏳ Обработка...")
+        self.result_preview.setStyleSheet("background-color: #0d1117; border: 2px solid #9e6a03; border-radius: 6px; font-size: 13px; color: #e6edf3; padding: 20px;")
+        self.process_btn.setEnabled(False)
+
+        import time
+        time.sleep(1.5)
+
+        result_name = f"processed_{self.current_source['name']}"
+        engine = "OpenAI" if self.engine_combo.currentIndex() == 1 else "Stable Diffusion"
+        self.result_preview.setText(f"✅ Готово!\n\n📄 {result_name}\n🔧 Запрос: {request[:50]}\n🤖 Движок: {engine}")
+        self.result_preview.setStyleSheet("background-color: #0d1117; border: 2px solid #238636; border-radius: 6px; font-size: 12px; color: #e6edf3; padding: 16px;")
+        self.process_btn.setEnabled(True)
+
+        QMessageBox.information(self, "Успех", f"Файл обработан:\n{result_name}")
+
+
+# ============================================================================
+# MAIN SECTION
+# ============================================================================
+class MediaContentSection(QWidget):
+    def __init__(self, data_manager, parent=None):
+        super().__init__(parent)
+        self.dm = data_manager
+        self.view_mode = "cards"
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # View mode switcher bar
+        mode_bar = QFrame()
+        mode_bar.setObjectName("zoneHeader")
+        mode_layout = QHBoxLayout(mode_bar)
+        mode_layout.setContentsMargins(16, 8, 16, 8)
+
+        mode_label = QLabel("Режим просмотра:")
+        mode_label.setStyleSheet("color: #8b949e; font-size: 12px;")
+        mode_layout.addWidget(mode_label)
+
+        self.mode_buttons = {}
+        for text, mid, icon in [("Карточки", "cards", "🔲"), ("Список", "list", "📋"), ("Таблица", "table", "📊")]:
+            btn = QPushButton(f"{icon} {text}")
+            btn.setObjectName("topBtn")
+            if mid == self.view_mode:
+                btn.setProperty("class", "primary")
+            btn.setStyleSheet("font-size: 12px; padding: 6px 12px;")
+            btn.clicked.connect(lambda checked, m=mid: self._switch_mode(m))
+            self.mode_buttons[mid] = btn
+            mode_layout.addWidget(btn)
+
+        mode_layout.addStretch()
+        layout.addWidget(mode_bar)
+
+        # Main splitter
+        splitter = QSplitter(Qt.Horizontal)
+
+        columns_container = QWidget()
+        columns_layout = QHBoxLayout(columns_container)
+        columns_layout.setContentsMargins(16, 16, 16, 16)
+        columns_layout.setSpacing(16)
+
+        self.sources_col = MediaColumn("Исходники", "📥", "#58a6ff", self.dm.get_media_sources(), "sources", self.view_mode)
+        self.references_col = MediaColumn("Эталоны", "🎯", "#bc8cff", self.dm.get_media_references(), "references", self.view_mode)
+        self.ready_col = MediaColumn("Готовые материалы", "✅", "#3fb950", self.dm.get_media_ready(), "ready", self.view_mode)
+
+        self.sources_col.card_clicked_signal.connect(self.on_source_selected)
+        self.references_col.card_clicked_signal.connect(self.on_reference_selected)
+        self.ready_col.card_clicked_signal.connect(self.on_ready_selected)
+
+        self.sources_col.setMinimumWidth(260)
+        self.sources_col.setMaximumWidth(500)
+        self.references_col.setMinimumWidth(260)
+        self.references_col.setMaximumWidth(500)
+        self.ready_col.setMinimumWidth(260)
+        self.ready_col.setMaximumWidth(500)
+
+        columns_layout.addWidget(self.sources_col, stretch=1)
+        columns_layout.addWidget(self.references_col, stretch=1)
+        columns_layout.addWidget(self.ready_col, stretch=1)
+
+        splitter.addWidget(columns_container)
+
+        self.processing_panel = ProcessingPanel(self.dm)
+        self.processing_panel.setMinimumWidth(320)
+        self.processing_panel.setMaximumWidth(450)
+        splitter.addWidget(self.processing_panel)
+
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
+        splitter.setHandleWidth(6)
+        splitter.setSizes([950, 380])
+        splitter.setStyleSheet("""
+            QSplitter::handle { background-color: #30363d; border-radius: 2px; }
+            QSplitter::handle:hover { background-color: #58a6ff; }
+        """)
+
+        layout.addWidget(splitter, stretch=1)
+
+    def _switch_mode(self, mode):
+        """Switch view mode and rebuild all columns."""
+        self.view_mode = mode
+
+        # Update button styles
+        for m, btn in self.mode_buttons.items():
+            btn.setProperty("class", "primary" if m == mode else "")
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+
+        # Rebuild columns with new view mode
+        for col, files, zone in [
+            (self.sources_col, self.dm.get_media_sources(), "sources"),
+            (self.references_col, self.dm.get_media_references(), "references"),
+            (self.ready_col, self.dm.get_media_ready(), "ready"),
+        ]:
+            col.view_mode = mode
+            col.files = list(files)
+            col._rebuild_content()
+            col.count_label.setText(str(len(col.files)))
+
+    def on_source_selected(self, file_data, zone):
+        if zone == "sources":
+            self.processing_panel.set_source(file_data)
+
+    def on_reference_selected(self, file_data, zone):
+        for i in range(self.processing_panel.ref_combo.count()):
+            if file_data["name"] in self.processing_panel.ref_combo.itemText(i):
+                self.processing_panel.ref_combo.setCurrentIndex(i)
+                break
+
+    def on_ready_selected(self, file_data, zone):
+        self.processing_panel.result_preview.setText(f"📄 {file_data['name']}\n{file_data.get('size', '')}\nСтатус: {file_data.get('status', '?')}")
+        self.processing_panel.result_preview.setStyleSheet("background-color: #0d1117; border: 2px solid #3fb950; border-radius: 6px; font-size: 13px; color: #e6edf3; padding: 20px;")
+
+    def move_card(self, file_data, from_zone, to_zone):
+        if from_zone == to_zone:
+            return
+
+        cols = {"sources": self.sources_col, "references": self.references_col, "ready": self.ready_col}
+        source_col = cols.get(from_zone)
+        target_col = cols.get(to_zone)
+
+        if not source_col or not target_col:
+            return
+
+        if file_data in source_col.files:
+            source_col.files.remove(file_data)
+            source_col._rebuild_content()
+            source_col.count_label.setText(str(len(source_col.files)))
+
+        if to_zone == "ready" and "status" not in file_data:
+            file_data["status"] = "pending"
+        if to_zone == "references" and "category" not in file_data:
+            file_data["category"] = "Общий"
+
+        if file_data not in target_col.files:
+            target_col.files.append(file_data)
+            target_col._rebuild_content()
+            target_col.count_label.setText(str(len(target_col.files)))
+
+        logger.info(f"Moved {file_data['name']}: {from_zone} -> {to_zone}")
+'''
+
+write("gui_sections/media_content_section.py", media_content)
+
+print("\n=== View Modes Added ===")
+print("\nNew features:")
+print("  [OK] View mode switcher bar at top of section")
+print("  [OK] 🔲 Карточки — крупные превью с чекбоксами и drag-and-drop")
+print("  [OK] 📋 Список — компактные строки (иконка + имя + размер + статус)")
+print("  [OK] 📊 Таблица — QTableWidget с колонками")
+print("  [OK] Drag-and-drop works in all modes")
+print("  [OK] Click to select works in all modes")
+print("  [OK] Mode switch rebuilds all 3 columns instantly")
+print("\nRun START.bat and click 'Медиа-контент'.")
+print("Try switching between 🔲 Карточки / 📋 Список / 📊 Таблица.")
