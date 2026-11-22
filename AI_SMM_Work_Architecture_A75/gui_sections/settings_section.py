@@ -59,10 +59,20 @@ class SettingsSection(QWidget):
         self.provider.addItem("Облако (OpenAI-совместимый)", "cloud")
         form.addRow("Провайдер по умолчанию", self.provider)
 
-        self.local_model = QLineEdit()
+        model_row = QWidget()
+        model_row_layout = QHBoxLayout(model_row)
+        model_row_layout.setContentsMargins(0, 0, 0, 0)
+        model_row_layout.setSpacing(6)
+        self.local_model = QComboBox()
         self.local_model.setObjectName("formInput")
-        self.local_model.setPlaceholderText("qwen3:8b")
-        form.addRow("Локальная модель", self.local_model)
+        self.local_model.setMinimumWidth(220)
+        model_row_layout.addWidget(self.local_model, stretch=1)
+        self.refresh_models_btn = QPushButton("Обновить")
+        self.refresh_models_btn.setObjectName("topBtn")
+        self.refresh_models_btn.setToolTip("Перечитать список моделей из Ollama")
+        self.refresh_models_btn.clicked.connect(lambda: self.refresh_models())
+        model_row_layout.addWidget(self.refresh_models_btn)
+        form.addRow("Локальная модель", model_row)
 
         self.cloud_model = QLineEdit()
         self.cloud_model.setObjectName("formInput")
@@ -266,13 +276,76 @@ class SettingsSection(QWidget):
         self.instagram_token.clear()
         self._load_token_state()
 
+    # --- локальные модели ---
+    NOT_INSTALLED = " — не установлена"
+
+    def installed_models(self) -> list:
+        """Модели, скачанные в Ollama; пусто, если Ollama не отвечает."""
+        try:
+            from ai_core import OllamaProvider
+            return [name for name in OllamaProvider().models() if name]
+        except Exception:
+            logger.warning("не удалось прочитать модели Ollama", exc_info=True)
+            return []
+
+    def current_model(self) -> str:
+        """Имя модели без пометки «не установлена»."""
+        data = self.local_model.currentData()
+        return str(data or self.local_model.currentText() or "").strip()
+
+    def _fill_models(self, models, current: str) -> None:
+        names = [str(name) for name in models]
+        self.local_model.blockSignals(True)
+        self.local_model.clear()
+        for name in names:
+            self.local_model.addItem(name, name)
+        if current and current not in names:
+            self.local_model.addItem(current + self.NOT_INSTALLED, current)
+        index = self.local_model.findData(current)
+        self.local_model.setCurrentIndex(index if index >= 0 else 0)
+        self.local_model.blockSignals(False)
+
+    def refresh_models(self, select: str = "") -> list:
+        """Перечитать список из Ollama, сохранив выбранную модель."""
+        current = select or self.current_model()
+        models = self.installed_models()
+        if models:
+            self._fill_models(models, current)
+            self.status.setText(f"Модели Ollama: {len(models)}")
+        elif current:
+            self._fill_models([], current)
+            self.status.setText("Ollama не отвечает — оставил текущую модель")
+        return models
+
+    def _sync_saved_model(self) -> None:
+        """Показать модель из настроек, без обращения к Ollama."""
+        if not self.settings:
+            return
+        saved = str(self.settings.get("local_model") or "")
+        if not self.local_model.count():
+            self.refresh_models(saved)
+            return
+        index = self.local_model.findData(saved)
+        if index < 0 and saved:
+            names = [self.local_model.itemData(row) for row in range(self.local_model.count())]
+            self._fill_models([name for name in names if name], saved)
+        elif index >= 0:
+            self.local_model.setCurrentIndex(index)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        try:
+            self._sync_saved_model()
+        except Exception:
+            logger.exception("не удалось подхватить сохранённую модель")
+
     def _load_values(self):
         if not self.settings:
             self.status.setText("Хранилище настроек недоступно")
             return
         index = self.provider.findData(self.settings.get("provider"))
         self.provider.setCurrentIndex(max(index, 0))
-        self.local_model.setText(str(self.settings.get("local_model") or ""))
+        self._sync_saved_model()
         self.cloud_model.setText(str(self.settings.get("cloud_model") or ""))
         self.cloud_endpoint.setText(str(self.settings.get("cloud_endpoint") or ""))
         self.budget.setValue(float(self.settings.get("monthly_budget_usd") or 0))
@@ -288,7 +361,7 @@ class SettingsSection(QWidget):
             return
         self.settings.update({
             "provider": self.provider.currentData(),
-            "local_model": self.local_model.text().strip(),
+            "local_model": self.current_model(),
             "cloud_model": self.cloud_model.text().strip(),
             "cloud_endpoint": self.cloud_endpoint.text().strip(),
             "monthly_budget_usd": float(self.budget.value()),

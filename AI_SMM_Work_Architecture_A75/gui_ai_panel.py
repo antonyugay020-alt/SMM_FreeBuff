@@ -390,6 +390,7 @@ class AIPanel(QWidget):
         if kind == "ready" and state.get("switched"):
             if self._remember_model(str(state.get("model") or "")):
                 text = (f"{text} Записал в настройки — при следующем запуске подмены не будет.")
+                self._refresh_workspace()
             else:
                 text = (f"{text} В настройки записать не удалось — впишите модель "
                         "вручную в «Настройках».")
