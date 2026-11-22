@@ -434,16 +434,41 @@ class AITools:
         strat = self.dm.get_strategy() or {}
         profile = self.dm.get_brand_profile() or {}
         plan = self.dm.get_content_plan()
+        events = self.dm.get_calendar_events()
+        summary = (f"Проект: {strat.get('project_name') or self.dm.project_id}. "
+                   f"Блоков стратегии: {len(strat.get('sections') or [])}, "
+                   f"позиций плана: {len(plan)}, событий: {len(events)}, "
+                   f"медиа: {len(self.dm.get_media_sources()) + len(self.dm.get_media_ready())}.")
+        if str(scope or "").lower() == "calendar":
+            summary += self._calendar_lines(events)
         return {
-            "summary": (f"Проект: {strat.get('project_name') or self.dm.project_id}. "
-                        f"Блоков стратегии: {len(strat.get('sections') or [])}, "
-                        f"позиций плана: {len(plan)}, событий: {len(self.dm.get_calendar_events())}, "
-                        f"медиа: {len(self.dm.get_media_sources()) + len(self.dm.get_media_ready())}."),
+            "summary": summary,
             "effect": {"profile_filled": bool(profile.get("client_name")),
                        "strategy_sections": len(strat.get("sections") or []),
                        "plan_items": len(plan)},
             "undo": {},
         }
+
+    @staticmethod
+    def _calendar_lines(events: List[Dict[str, Any]], limit: int = 10) -> str:
+        """Строки календаря для чтения: дата, время, название. Ничего не меняет."""
+        if not events:
+            return "\nСобытий пока нет — план в календарь не переносили."
+
+        def key(event: Dict[str, Any]) -> Tuple[int, datetime]:
+            try:
+                return 0, datetime.strptime(str(event.get("date") or "").strip(), "%d.%m.%Y")
+            except ValueError:
+                return 1, datetime.min
+
+        ordered = sorted(events, key=key)
+        lines = [f"\nСобытия календаря ({len(ordered)}):"]
+        for event in ordered[:limit]:
+            lines.append(f"· {event.get('date') or '—'} {event.get('time') or ''} — "
+                         f"{event.get('title') or 'Событие'}".rstrip())
+        if len(ordered) > limit:
+            lines.append(f"… и ещё {len(ordered) - limit}")
+        return "\n".join(lines)
 
     def search_knowledge(self, query: str = "", limit: int = 5) -> Dict[str, Any]:
         needle = str(query or "").lower().strip()
@@ -1625,6 +1650,8 @@ class AIRouter:
             return RouteDecision("instagram_status", {}, "rules")
         if re.search(r"календар", low) and re.search(r"добав|перенес|синхрон|расстав|постав", low):
             return RouteDecision("sync_plan_events", {}, "rules")
+        if re.search(r"календар", low) and re.search(r"покажи|открой|посмотри|что в|какие|список", low):
+            return RouteDecision("get_project_context", {"scope": "calendar"}, "rules")
         if re.search(r"(проверь|проверить|проверка).{0,25}(план|публикац|позиц)"
                      r"|(план|публикац).{0,20}провер", low):
             return RouteDecision("validate_plan", {}, "rules")
