@@ -945,3 +945,8 @@ GUI:
 - Проверки: d4 16/16 OK (dry-run без POST, публикация, дубль, лимит, ошибка без утечки токена, откат через `core.undo`); d3 26/26; d2, c1–c5, processed, step6, validate, smoke_chain — exit 0; compileall без `.venv` — exit 0.
 - Не проверено: живая публикация и Graph API (нет токена и сети), App Review/Advanced Access.
 - Следующая модель: Claude Haiku 4.5 для следующего шага, если он появится.
+
+## Регресс после упрощения publish-функций (instagram_auth.py, коммит 4a279a2)
+- Коды выхода: d2, d3, d4, step5–step13, c1–c5, processed, validate, legacy_val — все 0; py_compile всех *.py вне .venv — 0.
+- step7 и step9 падали на тестовых утверждениях: сравнивали `source_path` с файлом в проекте, а код (ai_core.py) хранит исходник импорта. Исправлены тесты, код не менялся.
+- Не проверено: живой Graph API и реальная публикация (нет токена и сети), smoke_chain (файла нет в /tmp).
