@@ -61,13 +61,13 @@ class OtherMaterialsSection(DataSection):
         self.search = QLineEdit()
         self.search.setObjectName("formInput")
         self.search.setPlaceholderText("🔍 Поиск по имени или тегам")
-        self.search.textChanged.connect(self.refresh)
+        self.search.textChanged.connect(self._apply_filter)
         filters.addWidget(self.search, stretch=1)
         self.type_filter = QComboBox()
         self.type_filter.setObjectName("formInput")
         self.type_filter.addItem("Все типы")
         self.type_filter.addItems(sorted(TYPE_LABELS.values()))
-        self.type_filter.currentIndexChanged.connect(self.refresh)
+        self.type_filter.currentIndexChanged.connect(self._apply_filter)
         filters.addWidget(self.type_filter)
         self.status = QLabel("")
         self.status.setStyleSheet(f"color: {TEAL}; font-size: 11px;")
@@ -93,7 +93,9 @@ class OtherMaterialsSection(DataSection):
         splitter.addWidget(self.table)
 
         side = QFrame()
-        side.setStyleSheet(f"QFrame {{ background: {PANEL}; border-left: 1px solid {BORDER}; }}")
+        side.setObjectName("materialsSide")
+        side.setStyleSheet(f"#materialsSide {{ background: {PANEL};"
+                           f" border-left: 1px solid {BORDER}; }}")
         side_box = QVBoxLayout(side)
         side_box.setContentsMargins(12, 12, 12, 12)
         self.preview = QLabel("Выберите файл")
@@ -127,6 +129,7 @@ class OtherMaterialsSection(DataSection):
         return (self.dm.get_other_files() or {}) if self.dm else {}
 
     def refresh(self):
+        """Перебрать папки и заново применить фильтр."""
         all_files = self._all()
         self.folder_list.blockSignals(True)
         self.folder_list.clear()
@@ -138,8 +141,11 @@ class OtherMaterialsSection(DataSection):
             if folder_id == self.folder:
                 self.folder_list.setCurrentItem(item)
         self.folder_list.blockSignals(False)
+        self._apply_filter()
 
-        records = list(all_files.get(self.folder, []))
+    def _apply_filter(self):
+        """Показать файлы текущей папки по строке поиска и типу."""
+        records = list(self._all().get(self.folder, []))
         query = self.search.text().strip().lower()
         wanted = self.type_filter.currentText()
         self._records = [
@@ -191,19 +197,24 @@ class OtherMaterialsSection(DataSection):
             self.preview.setText("Выберите файл")
             self.info.setText("")
             return
-        path = Path(record.get("path") or "")
-        text = (f"{record.get('name', '')}\n\n{record.get('size', '')} · "
-                f"{record.get('date', '')}\n{record.get('type', '')}")
-        if record.get("type") == "image" and path.is_file():
+        path = self._path_of(record)
+        if record.get("type") == "image" and path is not None and path.is_file():
             pixmap = QPixmap(str(path))
-            if not pixmap.isNull():
+            if pixmap.isNull():
+                self.preview.setText("Файл не читается как изображение")
+            else:
                 self.preview.setPixmap(pixmap.scaled(232, 232, Qt.KeepAspectRatio,
                                                      Qt.SmoothTransformation))
-            else:
-                self.preview.setText("Файл не читается как изображение")
         else:
-            self.preview.setText(text)
-        self.info.setText(str(path) if path else "Файл не сохранён на диске")
+            self.preview.setText(f"{record.get('name', '')}\n\n{record.get('size', '')} · "
+                                 f"{record.get('date', '')}\n{record.get('type', '')}")
+        self.info.setText(str(path) if path is not None else "Файл не сохранён на диске")
+
+    @staticmethod
+    def _path_of(record):
+        """Путь записи или None: Path('') молча превратился бы в текущую папку."""
+        raw = str(record.get("path") or "")
+        return Path(raw) if raw else None
 
     # --- actions ---
     def _on_import(self):
@@ -218,8 +229,8 @@ class OtherMaterialsSection(DataSection):
         record = self._current_record()
         if record is None:
             return
-        path = Path(record.get("path") or "")
-        if not path.is_file():
+        path = self._path_of(record)
+        if path is None or not path.is_file():
             QMessageBox.information(self, "Файл", "Файл не найден на диске.")
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))

@@ -957,7 +957,7 @@ class AITools:
         if folder not in MATERIAL_FOLDERS:
             return {"summary": f"Неизвестная папка материалов: {folder or '—'}",
                     "effect": {}, "undo": {}}
-        sources = [Path(name) for name in (paths or []) if Path(name).exists()]
+        sources = [path for path in map(Path, paths or []) if path.exists()]
         if not sources:
             return {"summary": "Файлы не найдены — импортировать нечего", "effect": {}, "undo": {}}
 
@@ -987,19 +987,18 @@ class AITools:
 
     def delete_material(self, item_id: str = "") -> Dict[str, Any]:
         """Убрать запись материала; файл на диске остаётся — его не теряем молча."""
-        before = copy.deepcopy(self.dm.get_other_files())
         folders = self.dm._data.get("other_files") or {}
-        for folder, records in folders.items():
-            kept = [record for record in records if str(record.get("id")) != str(item_id)]
-            if len(kept) == len(records):
-                continue
-            folders[folder] = kept
-            self.dm.save()
-            return {"summary": f"Убрал материал из «{folder}» (файл остался на диске)",
-                    "effect": {"id": item_id, "folder": folder},
-                    "undo": {"op": "restore_sections",
-                             "sections": {"other_files": before}}}
-        return {"summary": f"Материал {item_id} не найден", "effect": {}, "undo": {}}
+        folder = next((name for name, records in folders.items()
+                       if any(str(record.get("id")) == str(item_id) for record in records)), None)
+        if folder is None:
+            return {"summary": f"Материал {item_id} не найден", "effect": {}, "undo": {}}
+        before = copy.deepcopy(self.dm.get_other_files())
+        folders[folder] = [record for record in folders[folder]
+                          if str(record.get("id")) != str(item_id)]
+        self.dm.save()
+        return {"summary": f"Убрал материал из «{folder}» (файл остался на диске)",
+                "effect": {"id": item_id, "folder": folder},
+                "undo": {"op": "restore_sections", "sections": {"other_files": before}}}
 
     # --- undo dispatcher ---
     def undo(self, action: Dict[str, Any]) -> str:
