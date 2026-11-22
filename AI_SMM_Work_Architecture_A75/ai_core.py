@@ -2207,7 +2207,7 @@ class AICore:
                                         {"media_id": str, "dry_run": str, "again": str},
                                         self.tools.instagram_publish,
                                         needs_confirmation=lambda a: str(a.get("dry_run", "1")).lower()
-                                        not in ("0", "false", "нет")))
+                                        in ("0", "false", "нет")))
         self.registry.register(ToolSpec("instagram_pack",
                                         "пакет под Instagram: файлы, подписи, замечания",
                                         {"dest": str}, self.tools.instagram_pack))

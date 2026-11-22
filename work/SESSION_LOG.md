@@ -1104,3 +1104,8 @@ GUI:
 - Результат: dry-run, `dry_run=0`, `instagram_status` и подтверждение «да» — все четыре пути возвращают «Токен Instagram не сохранён». Сети ноль вызовов, `published_id` не появляется, отметка `published` не ставится, статус остаётся `approved`, в журнале строк с `instagram_publish` нет. FAILS: нет.
 - Найдено расхождение с 5.33: `needs_confirmation` у `instagram_publish` срабатывает при `dry_run=1` (по умолчанию) и НЕ срабатывает при `dry_run=0`. То есть гейт стоит на безобидной проверке, а необратимый вызов идёт без вопроса. Записано в PLAN как открытый вопрос, код не менялся.
 - В GUI кнопки публикации нет: только «📸 Пакет в Instagram» (ручная выгрузка). Публикация доступна лишь через чат/инструмент.
+
+## 22.11.2026 — гейт подтверждения у instagram_publish исправлен
+- `needs_confirmation` перевёрнут на правильную сторону: вопрос «да/нет» только когда `dry_run` в `("0","false","нет")`, то есть перед реальной публикацией; dry-run по умолчанию идёт без вопроса. Повтор (`again`) требует `dry_run=0`, чтобы вообще опубликовать, поэтому тоже попадает под вопрос.
+- В `/tmp/d4_test.py` добавлен блок 10 из пяти утверждений: dry-run и dry_run=1 — без вопроса, dry_run=0 — вопрос, dry_run=0+again=1 — вопрос, dry_run=«нет» — вопрос. D4_GATE_DONE напечатан.
+- Проверки: d4_test 0 (все D4_OK + пять гейтов), t_publish_notoken 0 (наблюдение теперь «dry-run 1 → False | dry-run 0 → True»), t_refusals 0, compileall 0, t_topic_title/t_caption_len/t_topics/t_thinking/t_readonly/t_cardread/t_fixes 0, d2/d3, step5–step13, c1–c5, processed, validate, legacy_val, smoke_chain — 0.
