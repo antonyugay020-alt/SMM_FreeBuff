@@ -1053,3 +1053,9 @@ GUI:
 - `work/acceptance_live.py` на подставном Ollama: стратегия 5 блоков с текстами, план из настоящих тем, в подписи видно «тон: тёплый, без снобизма», 10 постов, ТЗ 10, событий 20, exit 0.
 - Приёмка exit 0; регресс d2, d3, d4, step5–step13, c1–c5, processed, validate, legacy_val, smoke_chain — все 0; compileall — 0; t_thinking, t_readonly, t_cardread, t_fixes — 0.
 - Ограничение: если модель вернула меньше тем, чем просили, остальные позиции добираются шаблоном (на 10 темах не проверено вживую — нужен прогон на qwen3:8b).
+
+## 22.11.2026 — репозиторий и первый пуш
+- `git remote add origin git@github-smm:antonyugay020-alt/SMM_FreeBuff.git`; доступ по deploy key `smm_deploy` (отпечаток `SHA256:bLZaRIfBaPrM12lU7JdxH9plBtS4dcmjVB8K1XS8Sw8`, read/write), конфиг `~/.ssh/config` → host `github-smm`.
+- Запушено: `freebuff/664811c7275e762d21b2b3a4` (upstream выставлен) и `main` на тот же коммит `a5a583a`; на удалённой стороне оба ref совпадают с локальным HEAD. Force-push не использовался, история не переписывалась.
+- `acceptance_bundle.zip` удалён как ненужный: обновления теперь через `git clone` / `git pull`.
+- Не сделано: default branch на GitHub остаётся `freebuff/…` (его выставляет первый пуш) — переключение на `main` в Settings → General делает пользователь.
