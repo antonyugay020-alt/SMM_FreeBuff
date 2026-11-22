@@ -31,6 +31,9 @@ import requests
 logger = logging.getLogger(__name__)
 
 CONFIDENCE_MIN = 0.7
+# Что ставить локально, если настроенная модель не скачана: сначала 8B-instruct на русском
+LOCAL_MODEL_PREFERENCE = ("qwen3:8b", "qwen2.5:7b-instruct", "gemma3:4b", "llama3.1:8b")
+MODEL_LIBRARY = "https://ollama.com/library"
 APP_DB_SCHEMA = """
 CREATE TABLE IF NOT EXISTS ai_usage (
     id         TEXT PRIMARY KEY,
@@ -67,7 +70,7 @@ class OllamaProvider:
 
     name = "ollama"
 
-    def __init__(self, host: str = "http://localhost:11434", model: str = "qwen2.5:7b-instruct",
+    def __init__(self, host: str = "http://localhost:11434", model: str = "qwen3:8b",
                  timeout: int = 120):
         self.host = host.rstrip("/")
         self.model = model
@@ -77,6 +80,48 @@ class OllamaProvider:
         try:
             return requests.get(f"{self.host}/api/tags", timeout=3).status_code == 200
         except Exception:
+            return False
+
+    def models(self) -> List[str]:
+        """Имена скачанных моделей; пусто, если Ollama не отвечает."""
+        try:
+            resp = requests.get(f"{self.host}/api/tags", timeout=5)
+            if resp.status_code != 200:
+                return []
+            return [str(one.get("name") or one.get("model") or "")
+                    for one in (resp.json().get("models") or []) if one]
+        except Exception:
+            return []
+
+    def has_model(self, model: Optional[str] = None) -> bool:
+        """Скачана ли модель; тег можно не указывать (qwen3 найдёт qwen3:8b)."""
+        wanted = str(model or self.model or "").strip()
+        if not wanted:
+            return False
+        names = self.models()
+        if not names:
+            return False
+        base = wanted.split(":")[0]
+        for name in names:
+            if name == wanted or name == f"{wanted}:latest":
+                return True
+            if ":" not in wanted and name.split(":")[0] == base:
+                return True
+        return False
+
+    def warm_up(self, model: Optional[str] = None, keep_alive: str = "15m") -> bool:
+        """Загрузить модель в память одним коротким запросом, чтобы первый ответ не ждал."""
+        target = str(model or self.model or "").strip()
+        try:
+            resp = requests.post(
+                f"{self.host}/api/chat",
+                json={"model": target, "stream": False, "keep_alive": keep_alive,
+                      "messages": [{"role": "user", "content": "ok"}],
+                      "options": {"num_predict": 1}},
+                timeout=300)
+            return resp.status_code == 200
+        except Exception as exc:
+            logger.warning("model warm-up failed: %s", exc)
             return False
 
     def chat(self, system: str, user: str, temperature: float = 0.2,
@@ -2371,6 +2416,41 @@ class AICore:
                          actor="user")
         self._refresh_ui()
         return AIReply(message, "journal", [{"id": last["id"], "tool": "undo", "summary": message}])
+
+    def ensure_local_model(self) -> Dict[str, Any]:
+        """Проверить, что локальная модель есть и загружена; иначе выбрать из установленных."""
+        provider = getattr(self.router, "local", None)
+        if provider is None or not hasattr(provider, "has_model"):
+            return {"state": "none", "model": "",
+                    "message": "Локальная модель не настроена — выберите её в «Настройках»."}
+        wanted = str(getattr(provider, "model", "") or "").strip()
+        host = str(getattr(provider, "host", "") or "")
+        if not provider.available():
+            return {"state": "offline", "model": wanted,
+                    "message": (f"Ollama не отвечает ({host or 'localhost:11434'}). "
+                                f"Запустите `ollama serve`, затем модель загрузится сама.")}
+        chosen = wanted
+        switched = False
+        if not provider.has_model(wanted):
+            chosen = next((name for name in LOCAL_MODEL_PREFERENCE if provider.has_model(name)), "")
+            if not chosen:
+                installed = ", ".join(provider.models()) or "ничего не скачано"
+                return {"state": "missing", "model": wanted, "installed": installed,
+                        "command": f"ollama pull {LOCAL_MODEL_PREFERENCE[0]}",
+                        "message": (f"Модели «{wanted}» нет. Скачайте нужную:\n\n"
+                                    f"    ollama pull {LOCAL_MODEL_PREFERENCE[0]}\n\n"
+                                    f"Откуда: {MODEL_LIBRARY}/{LOCAL_MODEL_PREFERENCE[0].split(':')[0]}")}
+            switched = True
+            provider.model = chosen
+            if getattr(self, "local", None) is not None:
+                self.local.model = chosen
+        loaded = provider.warm_up(chosen)
+        message = f"Модель {chosen} загружена." if loaded else f"Модель {chosen} скачана, но не прогрелась."
+        if switched:
+            message = (f"В настройках была «{wanted}», её нет в Ollama — работаю на «{chosen}». "
+                       f"Сменить можно в «Настройках» → «Локальная модель». " + message)
+        return {"state": "ready", "model": chosen, "switched": switched, "loaded": loaded,
+                "message": message}
 
     def undo(self, action_id: str) -> AIReply:
         row = self.journal.get(action_id)

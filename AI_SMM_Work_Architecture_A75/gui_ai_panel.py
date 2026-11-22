@@ -103,6 +103,24 @@ class _ReplyWorker(QThread):
         self.done.emit(reply, "")
 
 
+class _ModelWorker(QThread):
+    """Проверка и загрузка локальной модели в фоне: первый запуск может быть долгим."""
+
+    done = Signal(object)
+
+    def __init__(self, core, parent=None):
+        super().__init__(parent)
+        self._core = core
+
+    def run(self):
+        try:
+            state = self._core.ensure_local_model()
+        except Exception as exc:  # noqa: BLE001 — показываем причину в чате
+            logger.exception("model check failed")
+            state = {"state": "error", "message": f"Не смог проверить модель: {exc}"}
+        self.done.emit(state)
+
+
 class AIPanel(QWidget):
     """Right-side panel for AI interaction."""
 
@@ -122,6 +140,7 @@ class AIPanel(QWidget):
             
         self.ai_core = None
         self._reply_thread = None
+        self._model_thread = None
         self._thinking_label = None
         self._thinking_timer = None
         self._thinking_started = 0.0
@@ -327,6 +346,29 @@ class AIPanel(QWidget):
         self.ai_core = AICore(dm, self.state.get("settings"))
         self.ai_core.on_change = self._refresh_workspace
         self._update_budget()
+        QTimer.singleShot(0, self._start_model_check)
+
+    def _start_model_check(self):
+        """Один раз при подключении проекта: есть ли модель и загружена ли она."""
+        if self.ai_core is None or not hasattr(self.ai_core, "ensure_local_model"):
+            return
+        if self._model_thread is not None and self._model_thread.isRunning():
+            return
+        self._model_thread = _ModelWorker(self.ai_core, self)
+        self._model_thread.done.connect(self._show_model_state)
+        self._model_thread.finished.connect(self._model_thread.deleteLater)
+        self._model_thread.start()
+
+    def _show_model_state(self, state):
+        state = state or {}
+        kind = str(state.get("state") or "")
+        text = str(state.get("message") or "").strip()
+        if kind == "ready" and not state.get("switched"):
+            logger.info("local model ready: %s", state.get("model"))
+            return
+        if not text:
+            return
+        self._add_bubble("system", ("🤖 " + text) if kind == "ready" else f"⚠️ {text}")
 
     def _send_text(self, text: str):
         self._add_bubble("user", text)

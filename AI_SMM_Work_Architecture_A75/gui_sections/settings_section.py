@@ -61,7 +61,7 @@ class SettingsSection(QWidget):
 
         self.local_model = QLineEdit()
         self.local_model.setObjectName("formInput")
-        self.local_model.setPlaceholderText("qwen2.5:7b-instruct")
+        self.local_model.setPlaceholderText("qwen3:8b")
         form.addRow("Локальная модель", self.local_model)
 
         self.cloud_model = QLineEdit()
