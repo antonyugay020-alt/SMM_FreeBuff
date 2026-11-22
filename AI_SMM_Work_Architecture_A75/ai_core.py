@@ -290,6 +290,69 @@ class ToolRegistry:
 NO_DATE, NO_CAPTION, NO_TASK = "без даты", "без подписи", "без ТЗ"
 PLAN_FORMATS = {"пост": "Пост", "reels": "Reels", "рилс": "Reels", "карусель": "Карусель"}
 CAPTION_LIMIT = 400
+TOPIC_LIMIT = 60
+
+SECTION_LABEL_ALIASES = {
+    "about": ("о проекте", "о нас"),
+    "audience": ("аудитория", "целевая аудитория"),
+    "positioning": ("позиционирование",),
+    "usp": ("усп", "уникальные преимущества", "преимущества"),
+    "tone": ("тон", "тональность", "тон и стиль", "стиль"),
+}
+
+
+TOPIC_IMPERATIVES = ("попробуйте", "попробуй", "погрузитесь", "погрузись", "приходите", "приходи",
+                     "загляните", "загляни", "узнайте", "узнай", "делитесь", "поделитесь", "наслаждайтесь",
+                     "выбирайте", "выберите", "откройте", "открой", "посмотрите", "смотрите", "успейте",
+                     "успей", "дегустируйте", "оцените")
+TOPIC_TAIL_STOP = {"и", "а", "но", "или", "как", "что", "чтобы", "в", "во", "на", "с", "со", "для", "по",
+                   "из", "от", "к", "ко", "о", "об", "при", "за", "до", "у", "же", "ли", "бы"}
+
+
+def _short_topic(text: str, limit: int = TOPIC_LIMIT) -> str:
+    """Тема плана — короткий заголовок: без императива, без точки и не длиннее limit символов."""
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    for verb in TOPIC_IMPERATIVES:
+        if text.lower().startswith(verb + " "):
+            text = text[len(verb):].strip()
+            break
+    head = text.split(",", 1)[0].strip()
+    if len(head) >= 12:
+        text = head
+    text = text.rstrip(" .!…,;:")
+    if len(text) > limit:
+        cut = text[:limit]
+        text = (cut.rsplit(" ", 1)[0] if " " in cut else cut).rstrip(" .,!…,;:—-")
+    while True:
+        words = text.split()
+        if len(words) > 1 and words[-1].lower().strip(".,!?:;") in TOPIC_TAIL_STOP:
+            text = " ".join(words[:-1]).rstrip(" .,!…,;:—-")
+            continue
+        break
+    if text and text[0].islower():
+        text = text[0].upper() + text[1:]
+    return text
+
+
+def _clean_section(section: Dict[str, Any]) -> Dict[str, Any]:
+    """Убирает повтор названия блока в начале текста: «Позиционирование: Позиционирование: …»."""
+    if not isinstance(section, dict):
+        return section
+    content = str(section.get("content") or "").strip()
+    labels = [str(section.get("title") or "").strip()]
+    labels += list(SECTION_LABEL_ALIASES.get(str(section.get("id") or "").strip(), ()))
+    for label in [l for l in labels if l]:
+        pattern = re.compile(rf"^\s*{re.escape(label)}\s*[:—–-]\s*", re.IGNORECASE)
+        for _ in range(3):
+            stripped = pattern.sub("", content, count=1)
+            if stripped == content:
+                break
+            content = stripped
+    if content and content[0].islower():
+        content = content[0].upper() + content[1:]
+    cleaned = dict(section)
+    cleaned["content"] = content
+    return cleaned
 
 
 def _shorten_caption(text: str, limit: int = CAPTION_LIMIT) -> str:
@@ -1829,13 +1892,14 @@ class AIRouter:
             profile = self.profile_getter() or {}
         system = ("Ты SMM-стратег. Верни JSON: {\"sections\": [{\"id\": \"about\", \"title\": \"О проекте\", "
                   "\"content\": \"...\"}]} — 5 блоков: about, audience, positioning, usp, tone. "
+                  "В content не повторяй название блока и не начинай с «Заголовок:». "
                   "Пиши по-русски, 2–4 предложения на блок.")
         user = f"Бриф: {brief}\nБренд-профиль: {json.dumps(profile, ensure_ascii=False)}"
         raw = self._generate(system, user, "strategy")
         for data in _json_candidates(raw):
             sections = data.get("sections") if isinstance(data, dict) else None
             if isinstance(sections, list):
-                built = [s for s in sections if isinstance(s, dict)]
+                built = [_clean_section(s) for s in sections if isinstance(s, dict)]
                 if built:
                     return built
         return []
@@ -1847,6 +1911,9 @@ class AIRouter:
         sections = [f"{s.get('title')}: {s.get('content')}" for s in strategy.get("sections") or []]
         system = ("Ты SMM-стратег. Верни JSON: {\"topics\": [{\"topic\": \"...\", \"rubric\": \"...\", "
                   "\"format\": \"Пост\"}]}. Темы конкретные и разные, без нумерации и без слова «идея». "
+                  "Тема — короткий заголовок до 60 символов, без точки в конце и без императива "
+                  "(не «попробуйте», «погрузитесь», «приходите»), лучше существительным: «Свежая обжарка "
+                  "каждое утро», «Что взять, если не пьёте кофе». "
                   "Каждая тема — про гостя и его выгоду: что он получит, попробует, сэкономит или почувствует. "
                   "Не предлагай темы про то, как гость готовит или обжаривает кофе дома, и про внутренние "
                   "процессы без пользы для гостя. "
@@ -1862,9 +1929,11 @@ class AIRouter:
             built = []
             for item in topics:
                 if isinstance(item, str) and item.strip():
-                    built.append({"topic": item.strip()})
+                    built.append({"topic": _short_topic(item)})
                 elif isinstance(item, dict) and str(item.get("topic") or "").strip():
-                    built.append(item)
+                    cleaned = dict(item)
+                    cleaned["topic"] = _short_topic(item.get("topic"))
+                    built.append(cleaned)
             if built:
                 return built[:count]
         return []
