@@ -461,7 +461,7 @@ Instagram и Graph API, видео и субтитры, хостинг меди�
 
 ### 0. Окружение (иначе остальное не запустится)
 
-Тесты и приграмма требуют `cryptography`, она указана в `AI_SMM_Work_Architecture_A75/requirements.txt`.
+Тесты и приложение требуют `cryptography`, она указана в `AI_SMM_Work_Architecture_A75/requirements.txt`.
 Глобальный `python` её не видит — запускать интерпретатором из venv:
 
 ```powershell
