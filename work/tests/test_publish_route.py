@@ -44,12 +44,12 @@ class Graph:
     def writes(self):
         return [c for c in self.calls if c[0].endswith(("/media", "/media_publish"))]
 
-def build(route_reply=None):
+def build(route_reply=None, media=True):
     """Свежий проект: два материала с публичным URL, живой токен, подставной Graph."""
     tmp = Path(tempfile.mkdtemp(prefix="route_"))
     photo = tmp / "p.jpg"; photo.write_bytes(b"JPEG" * 20)
     dm = DataManager("rt", str(tmp / "proj"))
-    for media_id, name in (("m1", "p.jpg"), ("me_ab12cd", "q.jpg")):
+    for media_id, name in (("m1", "p.jpg"), ("me_ab12cd", "q.jpg")) if media else ():
         dm._data["media_ready"].append({"id": media_id, "name": name, "type": "image",
                                         "path": str(photo), "status": "approved",
                                         "remote_url": f"https://res.cloudinary.com/x/{name}"})
@@ -86,10 +86,20 @@ d = core.router.route("запости материал me_ab12cd")
 check("id me_ab12cd разобран", d.args.get("media_id") == "me_ab12cd", d.args)
 d = core.router.route("опубликуй me_ab12cd")
 check("id без слова «материал»", d.args.get("media_id") == "me_ab12cd", d.args)
-d = core.router.route("опубликуй материал")
-check("без id правило не срабатывает", d.tool != "instagram_publish", (d.tool, d.clarify))
+d = core.router.route("опубликуй материал ME_AB12CD")
+check("регистр id не мешает", d.args.get("media_id") == "me_ab12cd", d.args)
 d = core.router.route("подготовь публикацию в инстаграм")
 check("«подготовь публикацию» остаётся пакетом", d.tool == "instagram_pack", d.tool)
+
+# 3a. Несуществующий id не принимается — вопрос со списком доступных
+for text in ("опубликуй материал 3 поста", "опубликуй материал nope", "опубликуй материал"):
+    d = core.router.route(text)
+    print(f"3a {text!r}: tool={d.tool or '—'} clarify={d.clarify[:70]}")
+    check(f"«{text}»: не публикует", d.tool != "instagram_publish", (d.tool, d.args))
+    check(f"«{text}»: спрашивает какой материал", "Какой материал" in d.clarify, d.clarify)
+    check(f"«{text}»: перечисляет m1 и me_ab12cd",
+          "m1" in d.clarify and "me_ab12cd" in d.clarify, d.clarify)
+check("несуществующий id: модель не спрошена", not stub.calls, stub.calls)
 
 # 4. handle(): dry-run по умолчанию, «да/нет» не спрашивает, POST не идёт
 dm, core, stub = build()
@@ -132,12 +142,14 @@ print("7 «да»:", reply.text[:100])
 check("«да» публикует", "Опубликовал" in reply.text and "ig_999" in reply.text, reply.text)
 check("«да»: контейнер → media_publish", any(c[0].endswith("/media_publish") for c in g.writes()), g.writes())
 
-# 8. Без id правило молчит — модель по-прежнему может выбрать инструмент
-dm, core, stub = build({"tool": "instagram_publish", "args": {"media_id": "m1"}, "confidence": 0.9})
-d = core.router.route("опубликуй этот материал")
-print("8 модель:", d.layer, d.tool, d.args)
-check("запасной путь через модель цел", d.tool == "instagram_publish" and d.args.get("media_id") == "m1",
-      (d.tool, d.args))
+# 8. В проекте нет материалов — подсказка про импорт, а не догадка
+# 3a уже показал, что «3 поста» не превращается в media_id «3».
+dm, core, stub = build(media=False)
+d = core.router.route("опубликуй материал m1")
+print("8 пусто:", d.tool or "—", "|", d.clarify[:70])
+check("пустой проект: не публикует", d.tool == "", d.tool)
+check("пустой проект: подсказка про импорт", "Материалов нет" in d.clarify, d.clarify)
+check("пустой проект: модель не спрошена", not stub.calls, stub.calls)
 
 instagram_auth.requests.get, instagram_auth.requests.post = orig_get, orig_post
 print("FAILS:", fails or "нет")

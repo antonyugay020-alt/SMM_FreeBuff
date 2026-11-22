@@ -1758,6 +1758,7 @@ class AIRouter:
                              r"|dry_run\s*[=:]\s*(0|false|нет)", low):
                     args["dry_run"] = "0"
                 return RouteDecision("instagram_publish", args, "rules")
+            return RouteDecision("", {}, "rules", 0.4, self._publish_help())
         if re.search(r"календар", low) and re.search(r"добав|перенес|синхрон|расстав|постав", low):
             return RouteDecision("sync_plan_events", {}, "rules")
         if re.search(r"календар", low) and re.search(r"покажи|открой|посмотри|что в|какие|список", low):
@@ -1993,18 +1994,29 @@ class AIRouter:
         return self._latest_plan_id(), ""
 
     def _publish_media_id(self, text: str) -> str:
-        """id материала из фразы «опубликуй материал <id>»: после ключевого слова или известный id в тексте."""
-        known = {str(record.get("id")) for record in self.dm_media() if record.get("id")}
+        """id материала из фразы «опубликуй материал <id>» — только существующий материал."""
+        known = {str(record.get("id")): record for record in self.dm_media() if record.get("id")}
+        by_lower = {key.lower(): key for key in known}
         match = re.search(r"(?:материал\w*|медиа|файл\w*|media)\s*[№#:]?\s*([\w\-]{1,40})",
                           text, re.IGNORECASE)
-        if match:
-            candidate = match.group(1)
-            if candidate in known or re.search(r"[0-9_]", candidate):
-                return candidate
+        if match and match.group(1).lower() in by_lower:
+            return by_lower[match.group(1).lower()]
         for media_id in sorted(known):
-            if re.search(rf"(?<!\w){re.escape(media_id)}(?!\w)", text):
+            if re.search(rf"(?<!\w){re.escape(media_id)}(?!\w)", text, re.IGNORECASE):
                 return media_id
         return ""
+
+    def _publish_help(self) -> str:
+        """Вопрос вместо догадки: какие материалы вообще можно опубликовать."""
+        known = [(str(record.get("id")), str(record.get("name") or "без имени"))
+                 for record in self.dm_media() if record.get("id")]
+        if not known:
+            return ("Материалов нет: импортируйте файл в «Публикациях», "
+                    "затем скажите «опубликуй материал <id>».")
+        listed = ", ".join(f"{media_id} — {name}" for media_id, name in known[:10])
+        if len(known) > 10:
+            listed += f" и ещё {len(known) - 10}"
+        return f"Какой материал опубликовать? Доступные: {listed}."
 
     def _latest_plan_without_task(self) -> str:
         for item in reversed(self.dm_plan()):
