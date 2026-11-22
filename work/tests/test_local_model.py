@@ -136,4 +136,37 @@ panel._show_model_state({"state": "missing", "model": "x",
 ok("отсутствие модели видно вместе с командой",
    any("ollama pull qwen3:8b" in text for text in texts()), texts()[-3:])
 
+# --- автоподмена сохраняется в настройках ---
+from gui_settings import Settings
+
+settings_path = Path(tempfile.mkdtemp(prefix="model_settings_")) / "settings.json"
+settings = Settings(settings_path)
+panel2 = AIPanel({"settings": settings})
+panel2._show_model_state({"state": "ready", "switched": True, "model": "qwen3:8b",
+                          "message": "В настройках была «qwen2.5:7b-instruct», её нет — работаю на «qwen3:8b»."})
+ok("модель записана в настройки", settings.get("local_model") == "qwen3:8b",
+   settings.as_dict())
+ok("запись на диске",
+   json.loads(settings_path.read_text(encoding="utf-8"))["local_model"] == "qwen3:8b")
+ok("в чате сказано про запись",
+   any("Записал в настройки" in text for text in
+       [label.text() for label in panel2.findChildren(QLabel)]))
+reloaded = Settings(settings_path)
+ok("выбор переживает перезапуск", reloaded.get("local_model") == "qwen3:8b", reloaded.as_dict())
+
+_Handler.models = INSTALLED
+dm2 = DataManager("model_test2", tempfile.mkdtemp(prefix="model_test2_"))
+core2 = AICore(dm2, reloaded,
+               app_db_path=Path(tempfile.mkdtemp(prefix="model_db2_")) / "app.db")
+core2.local.host = URL
+state2 = core2.ensure_local_model()
+ok("повторного переключения нет", state2["state"] == "ready" and not state2["switched"], state2)
+
+# --- словарь вместо Settings тоже подходит ---
+plain = AIPanel({"settings": {}})
+plain._show_model_state({"state": "ready", "switched": True, "model": "qwen3:8b",
+                         "message": "подмена"})
+ok("словарь настроек обновлён", plain.state["settings"].get("local_model") == "qwen3:8b",
+   plain.state["settings"])
+
 print("LOCAL_MODEL_OK")

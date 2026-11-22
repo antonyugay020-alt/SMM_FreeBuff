@@ -359,6 +359,27 @@ class AIPanel(QWidget):
         self._model_thread.finished.connect(self._model_thread.deleteLater)
         self._model_thread.start()
 
+    def _remember_model(self, model: str) -> bool:
+        """Записать выбранную модель в настройки, чтобы не подменять её каждый запуск."""
+        if not model:
+            return False
+        settings = self.state.get("settings") if isinstance(self.state, dict) else None
+        if settings is None:
+            return False
+        try:
+            if hasattr(settings, "set"):
+                settings.set("local_model", model)
+            elif isinstance(settings, dict):
+                settings["local_model"] = model
+            else:
+                return False
+            if hasattr(settings, "save") and not settings.save():
+                return False
+        except Exception:
+            logger.exception("model choice not saved")
+            return False
+        return True
+
     def _show_model_state(self, state):
         state = state or {}
         kind = str(state.get("state") or "")
@@ -366,6 +387,12 @@ class AIPanel(QWidget):
         if kind == "ready" and not state.get("switched"):
             logger.info("local model ready: %s", state.get("model"))
             return
+        if kind == "ready" and state.get("switched"):
+            if self._remember_model(str(state.get("model") or "")):
+                text = (f"{text} Записал в настройки — при следующем запуске подмены не будет.")
+            else:
+                text = (f"{text} В настройки записать не удалось — впишите модель "
+                        "вручную в «Настройках».")
         if not text:
             return
         self._add_bubble("system", ("🤖 " + text) if kind == "ready" else f"⚠️ {text}")

@@ -14,7 +14,7 @@ SETTINGS_PATH = ROOT_DIR / "config" / "settings.json"
 
 DEFAULTS: Dict[str, Any] = {
     "provider": "ollama",              # ollama | cloud
-    "local_model": "qwen2.5:7b-instruct",
+    "local_model": "qwen3:8b",
     "cloud_model": "claude-haiku-4.5",
     "cloud_endpoint": "https://openrouter.ai/api/v1",
     "monthly_budget_usd": 30,
