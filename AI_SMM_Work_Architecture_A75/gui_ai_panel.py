@@ -1,5 +1,6 @@
 """AI Panel: Chat interface with Local LLM + Task Router + Proposal System + Auto-Distribution."""
 import logging
+import time
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
@@ -82,6 +83,26 @@ class _GenWorker(QObject):
         except Exception as e:
             self.done.emit(("err", f"Ошибка: {e}"))
 
+class _ReplyWorker(QThread):
+    """Ответ ядра в фоне: маршрутизация идёт через модель и может занять минуты."""
+
+    done = Signal(object, str)
+
+    def __init__(self, core, text: str, parent=None):
+        super().__init__(parent)
+        self._core = core
+        self._text = text
+
+    def run(self):
+        try:
+            reply = self._core.handle(self._text)
+        except Exception as exc:  # noqa: BLE001 — причину показываем в чате
+            logger.exception("ai core failed")
+            self.done.emit(None, str(exc) or exc.__class__.__name__)
+            return
+        self.done.emit(reply, "")
+
+
 class AIPanel(QWidget):
     """Right-side panel for AI interaction."""
 
@@ -100,6 +121,10 @@ class AIPanel(QWidget):
             logger.warning("Local LLM unavailable. Falling back to simulation.")
             
         self.ai_core = None
+        self._reply_thread = None
+        self._thinking_label = None
+        self._thinking_timer = None
+        self._thinking_started = 0.0
         self._build_ui()
         self._connect_signals()
         self.set_data_manager(self.dm)
@@ -290,7 +315,7 @@ class AIPanel(QWidget):
         
         self._add_bubble("user", text)
         self.input_box.clear()
-        QTimer.singleShot(0, lambda: self._on_ai_reply(text))
+        self._on_ai_reply(text)
 
     # === AI core bridge ===
     def set_data_manager(self, dm):
@@ -308,21 +333,57 @@ class AIPanel(QWidget):
         self._on_ai_reply(text)
 
     def _on_ai_reply(self, text: str):
+        """Ответ считаем в отдельном потоке: окно не замирает, пока думает модель."""
         if self.ai_core is None:
             self._add_bubble("assistant", "Ядро AI не подключено: нет проекта.")
             return
-        try:
-            reply = self.ai_core.handle(text)
-        except Exception as exc:
-            logger.exception("ai core failed")
-            self._add_bubble("assistant", f"Ошибка ядра AI: {exc}")
+        if self._reply_thread is not None and self._reply_thread.isRunning():
+            self._add_bubble("system", "⏳ Ещё думаю над прошлым запросом — дождись ответа.")
             return
 
-        self._add_bubble("assistant", reply.text)
-        for action in reply.actions or []:
+        self._thinking_started = time.monotonic()
+        self._thinking_label = self._add_bubble("system", "⏳ Думаю… 0 с")
+        self._thinking_timer = QTimer(self)
+        self._thinking_timer.setInterval(1000)
+        self._thinking_timer.timeout.connect(self._tick_thinking)
+        self._thinking_timer.start()
+
+        self._reply_thread = _ReplyWorker(self.ai_core, text, self)
+        self._reply_thread.done.connect(self._on_reply_done)
+        self._reply_thread.finished.connect(self._reply_thread.deleteLater)
+        self._reply_thread.start()
+
+    def _tick_thinking(self):
+        if self._thinking_label is None:
+            return
+        seconds = int(time.monotonic() - self._thinking_started)
+        self._thinking_label.setText(f"⏳ Думаю… {seconds} с")
+
+    def _drop_thinking(self):
+        if self._thinking_timer is not None:
+            self._thinking_timer.stop()
+            self._thinking_timer = None
+        label = self._thinking_label
+        self._thinking_label = None
+        if label is None:
+            return
+        bubble = label.parentWidget()
+        container = bubble.parentWidget() if bubble is not None else None
+        (container or bubble or label).deleteLater()
+
+    def _on_reply_done(self, reply, error: str):
+        self._drop_thinking()
+        self._reply_thread = None
+        if error:
+            self._add_bubble("assistant", f"Ошибка ядра AI: {error}")
+            return
+        text = str(getattr(reply, "text", "") or "").strip()
+        self._add_bubble("assistant", text or "Ядро вернуло пустой ответ — повтори запрос.")
+        actions = list(getattr(reply, "actions", None) or [])
+        for action in actions:
             self._add_action_row(action)
         self._update_budget()
-        if reply.actions:
+        if actions:
             self._refresh_workspace()
         self.chat_scroll.verticalScrollBar().setValue(
             self.chat_scroll.verticalScrollBar().maximum())
@@ -454,6 +515,7 @@ class AIPanel(QWidget):
         self.chat_layout.insertWidget(insert_index, container)
         
         self.chat_scroll.verticalScrollBar().setValue(self.chat_scroll.verticalScrollBar().maximum())
+        return txt
 
     def _show_proposal_card(self, proposal: Proposal):
         """Render interactive proposal card with COMPACT DESIGN."""

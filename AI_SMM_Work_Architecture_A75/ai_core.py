@@ -1688,6 +1688,19 @@ class RouteDecision:
     clarify: str = ""
 
 
+def _provider_ready(provider) -> bool:
+    """Подключён ли провайдер модели: `available` бывает и методом, и полем."""
+    if provider is None:
+        return False
+    available = getattr(provider, "available", None)
+    if callable(available):
+        try:
+            return bool(available())
+        except Exception:
+            return False
+    return bool(available)
+
+
 class AIRouter:
     """Turns text into a tool call. Never invents arguments silently."""
 
@@ -1846,8 +1859,13 @@ class AIRouter:
             return editor
         if cloud and cloud.clarify:
             return cloud
+        if not _provider_ready(self.local):
+            hint = ("Локальная модель не подключена — проверьте, что LM Studio/Ollama "
+                    "запущен и модель загружена.")
+        else:
+            hint = "Модель не разобрала задачу."
         return RouteDecision("", {}, "editor", 0.0,
-                             "Не понял задачу. Скажи иначе: например «создай стратегию», "
+                             f"Не понял задачу. {hint} Скажи иначе: например «создай стратегию», "
                              "«создай контент-план на 10 постов», «заполни бренд-профиль».")
 
     def _editor(self, decision: Optional[RouteDecision]) -> Optional[RouteDecision]:
