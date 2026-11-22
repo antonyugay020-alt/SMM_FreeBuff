@@ -822,6 +822,7 @@ class PublicationsSection(DataSection):
                                               lambda: self._process_media()))
         zone.add_header_widget(_header_button("🎬 Видео под площадку", self._process_video))
         zone.add_header_widget(_header_button("💬 Субтитры", self._process_subtitles))
+        zone.add_header_widget(_header_button("📸 Пакет в Instagram", self._instagram_pack))
         zone.add_header_widget(_header_button("📦 Экспорт пакета", self._export_package))
         return zone
 
@@ -925,57 +926,59 @@ class PublicationsSection(DataSection):
             "Видео (*.mp4 *.mov *.mkv *.avi *.webm *.m4v)")
         return path or ""
 
+    def _video_args(self, title: str) -> Optional[Dict[str, Any]]:
+        """Что обрабатываем: выделенное видео или файл с диска (для запуска через `paths`)."""
+        item = self.current
+        media_id = item.get("id") if item and item.get("type") == "video" else None
+        path = "" if media_id else self._video_from_disk(title)
+        if not media_id and not path:
+            QMessageBox.information(self, title,
+                                    "Выберите видео в медиатеке или файл на диске.")
+            return None
+        label = f"Материал: {item.get('name', '')}" if media_id else f"Файл: {Path(path).name}"
+        return {"media_ids": [media_id] if media_id else [], "paths": [path] if path else [],
+                "label": label, "media_id": media_id}
+
+    def _run_video_tool(self, tool: str, title: str, arg: str, options: Dict[str, Any],
+                        question: str, extra: Optional[Dict[str, Any]] = None):
+        """Спросить вариант и прогнать видео-инструмент по записи или по файлу; показать отчёт."""
+        args = self._video_args(title)
+        if args is None:
+            return
+        choice, ok = QInputDialog.getItem(self, title, f"{args['label']}\n{question}",
+                                         list(options), 0, False)
+        if not ok:
+            return
+        media_id = args["media_id"]
+        text = self.run_full(tool, media_ids=args["media_ids"], paths=args["paths"],
+                             **{arg: options[choice]}, **(extra or {}))
+        summary = text.splitlines()[0] if text else ""
+        QMessageBox.information(self, title, summary or "Готово")
+        self._refresh_all()
+        updated = next((m for m in self.dm.get_media_ready() if m.get("id") == media_id), None)
+        if updated:
+            self._select(updated)
 
     def _process_video(self):
         """Выбрать площадку и подготовить видео из медиатеки или файла на диске."""
         from ai_core import VIDEO_TARGETS
 
-        item = self.current
-        media_id = item.get("id") if item and item.get("type") == "video" else None
-        path = "" if media_id else self._video_from_disk("Видео под площадку")
-        if not media_id and not path:
-            QMessageBox.information(self, "Видео",
-                                    "Выберите видео в медиатеке или файл на диске.")
-            return
         labels = {label: key for key, (label, _suffix) in VIDEO_TARGETS.items()}
-        source = f"Материал: {item.get('name', '')}\n" if media_id else f"Файл: {Path(path).name}\n"
-        choice, ok = QInputDialog.getItem(
-            self, "Видео под площадку", f"{source}Куда готовим:", list(labels), 0, False)
-        if not ok:
-            return
-        text = self.run_full("process_video", media_ids=[media_id] if media_id else [],
-                             platform=labels[choice], paths=[path] if path else [])
-        summary = text.splitlines()[0] if text else ""
-        QMessageBox.information(self, "Видео под площадку", summary or "Готово")
-        self._refresh_all()
-        updated = next((m for m in self.dm.get_media_ready() if m.get("id") == media_id), None)
-        if updated:
-            self._select(updated)
+        self._run_video_tool("process_video", "Видео под площадку", "platform", labels,
+                             "Куда готовим:")
 
     def _process_subtitles(self):
-        """Распознать речь в видео из медиатеки или файле на диске: .srt или с выжиганием."""
-        item = self.current
-        media_id = item.get("id") if item and item.get("type") == "video" else None
-        path = "" if media_id else self._video_from_disk("Субтитры")
-        if not media_id and not path:
-            QMessageBox.information(self, "Субтитры",
-                                    "Выберите видео в медиатеке или файл на диске.")
-            return
+        """Распознать речь: только `.srt` или видео с выжженными субтитрами."""
         modes = {"Видео с субтитрами": True, "Только .srt": False}
-        source = f"Материал: {item.get('name', '')}\n" if media_id else f"Файл: {Path(path).name}\n"
-        choice, ok = QInputDialog.getItem(
-            self, "Субтитры", f"{source}Что сделать:", list(modes), 0, False)
-        if not ok:
-            return
-        text = self.run_full("make_subtitles", media_ids=[media_id] if media_id else [],
-                             language="ru", burn=modes[choice],
-                             paths=[path] if path else [])
+        self._run_video_tool("make_subtitles", "Субтитры", "burn", modes, "Что сделать:",
+                             {"language": "ru"})
+
+    def _instagram_pack(self):
+        """Выбрать папку и собрать пакет под Instagram: файлы, подписи, замечания."""
+        folder = QFileDialog.getExistingDirectory(self, "Куда положить пакет", str(Path.home()))
+        text = self.run_full("instagram_pack", dest=folder or "")
         summary = text.splitlines()[0] if text else ""
-        QMessageBox.information(self, "Субтитры", summary or "Готово")
-        self._refresh_all()
-        updated = next((m for m in self.dm.get_media_ready() if m.get("id") == media_id), None)
-        if updated:
-            self._select(updated)
+        QMessageBox.information(self, "Пакет в Instagram", summary or "Готово")
 
     def _export_package(self):
         """Выбрать папку и собрать в ней пакет публикаций (журнал — как у остальных инструментов)."""

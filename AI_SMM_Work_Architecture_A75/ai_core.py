@@ -802,6 +802,23 @@ class AITools:
         self.dm._data.setdefault(zone_key, []).append(record)
         return record
 
+    def _video_batch(self, media_ids: Optional[List[str]], paths: Optional[List[str]],
+                     ffmpeg_need: str, verb: str
+                     ) -> Tuple[Any, List[Tuple[str, str, Dict[str, Any]]], List[str], Dict[str, Any]]:
+        """ffmpeg, пути из чата и найденные записи для видео-инструментов; отказ — в `refusal`."""
+        processor = self._video_processor()
+        if not processor.ffmpeg_available:
+            return processor, [], [], {"summary": f"Нужен ffmpeg: без него {ffmpeg_need}",
+                                       "effect": {}, "undo": {}}
+        from_paths, problems = self._ids_from_paths(paths)
+        found = self._media_records(list(media_ids or []) + from_paths)
+        if not found:
+            return processor, [], problems, {
+                "summary": f"Нечего {verb}: " +
+                           ("; ".join(problems[:3]) or "материалы не найдены"),
+                "effect": {}, "undo": {}}
+        return processor, found, problems, {}
+
     def _ids_from_paths(self, paths: Optional[List[str]]) -> Tuple[List[str], List[str]]:
         """Записи по путям из чата: знакомые файлы — по записи, чужие копируются в проект."""
         wanted = [str(path).strip() for path in (paths or []) if str(path).strip()]
@@ -1015,17 +1032,10 @@ class AITools:
         if target not in VIDEO_TARGETS:
             return {"summary": f"Неизвестная площадка: {platform or '—'}",
                     "effect": {}, "undo": {}}
-        processor = self._video_processor()
-        if not processor.ffmpeg_available:
-            return {"summary": "Нужен ffmpeg: без него видео не обработать",
-                    "effect": {}, "undo": {}}
-
-        from_paths, problems = self._ids_from_paths(paths)
-        found = self._media_records(list(media_ids or []) + from_paths)
-        if not found:
-            return {"summary": "Нечего обрабатывать: " +
-                               ("; ".join(problems[:3]) or "материалы не найдены"),
-                    "effect": {}, "undo": {}}
+        processor, found, problems, refusal = self._video_batch(
+            media_ids, paths, "видео не обработать", "обрабатывать")
+        if refusal:
+            return refusal
 
         label, suffix = VIDEO_TARGETS[target]
         before: Dict[str, Any] = {}
@@ -1086,17 +1096,10 @@ class AITools:
                        language: str = "ru", burn: bool = True,
                        paths: Optional[List[str]] = None) -> Dict[str, Any]:
         """Распознать речь: `.srt` в проект и, если нужно, видео с выжженными субтитрами."""
-        processor = self._video_processor()
-        if not processor.ffmpeg_available:
-            return {"summary": "Нужен ffmpeg: без него субтитры не собрать",
-                    "effect": {}, "undo": {}}
-
-        from_paths, problems = self._ids_from_paths(paths)
-        found = self._media_records(list(media_ids or []) + from_paths)
-        if not found:
-            return {"summary": "Нечего распознавать: " +
-                               ("; ".join(problems[:3]) or "материалы не найдены"),
-                    "effect": {}, "undo": {}}
+        processor, found, problems, refusal = self._video_batch(
+            media_ids, paths, "субтитры не собрать", "распознавать")
+        if refusal:
+            return refusal
 
         subtitles = Path(self.dm.data_dir) / "subtitles"
         before: Dict[str, Any] = {}
@@ -1167,6 +1170,68 @@ class AITools:
             encoding="utf-8")
         return {"summary": f"Собрал пакет в {folder} (позиций: {len(items)})",
                 "effect": {"path": str(folder)},
+                "undo": {"op": "delete_folder", "path": str(folder)}}
+
+    # --- Instagram: пакет для ручной загрузки ---
+    @staticmethod
+    def _slug(text: str, fallback: str = "материал", limit: int = 40) -> str:
+        """Имя файла из темы или имени: без пробелов и лишних знаков."""
+        slug = re.sub(r"[^\w\-]+", "-", str(text or "").strip().lower())
+        slug = re.sub(r"-{2,}", "-", slug).strip("-_")[:limit].strip("-_")
+        return slug or fallback
+
+    def instagram_pack(self, dest: str = "") -> Dict[str, Any]:
+        """Собрать пакет под Instagram: файлы одобренных материалов, подписи и замечания."""
+        approved = [m for m in self.dm.get_media_ready() if m.get("status") == "approved"]
+        plan = self.dm.get_content_plan()
+        if not approved and not plan:
+            return {"summary": "Пакет не собран: нет ни готовых материалов, ни плана",
+                    "effect": {}, "undo": {}}
+        base = Path(dest) if str(dest).strip() else Path(self.dm.data_dir) / "instagram"
+        folder = base / datetime.now().strftime("%Y%m%d-%H%M%S")
+        media_dir = folder / "media"
+        media_dir.mkdir(parents=True, exist_ok=True)
+
+        problems: List[str] = []
+        manifest = ["файл;тип;формат;размер;операции"]
+        copied = 0
+        for record in approved:
+            path = Path(str(record.get("path") or ""))
+            if not path.is_file():
+                problems.append(f"{record.get('name')}: файл не найден")
+                continue
+            name = (f"{datetime.now():%Y%m%d}_"
+                    f"{self._slug(Path(str(record.get('name') or '')).stem)}{path.suffix.lower()}")
+            try:
+                shutil.copy2(path, media_dir / name)
+            except OSError as exc:
+                problems.append(f"{record.get('name')}: не скопировался ({exc})")
+                continue
+            copied += 1
+            manifest.append(";".join([name, str(record.get("type") or ""),
+                                      str(record.get("size") or ""),
+                                      human_size(path.stat().st_size),
+                                      " ".join(record.get("processed") or [])]))
+
+        captions: List[str] = []
+        for item in plan:
+            caption = str(item.get("caption") or "").strip()
+            tags = " ".join(item.get("hashtags") or [])
+            captions += [f"{item.get('date') or '—'} · {item.get('topic') or '—'}", caption, tags, ""]
+            if not caption:
+                problems.append(f"{item.get('topic')}: нет подписи")
+            if not tags:
+                problems.append(f"{item.get('topic')}: нет хэштегов")
+
+        (folder / "captions.txt").write_text("\n".join(captions), encoding="utf-8")
+        (folder / "manifest.csv").write_text("\n".join(manifest), encoding="utf-8")
+        (folder / "problems.txt").write_text("\n".join(problems) or "замечаний нет",
+                                              encoding="utf-8")
+        summary = f"Пакет в Instagram: файлов {copied}, позиций плана {len(plan)}"
+        if problems:
+            summary += f". Замечаний: {len(problems)}"
+        return {"summary": summary,
+                "effect": {"path": str(folder), "files": copied, "problems": len(problems)},
                 "undo": {"op": "delete_folder", "path": str(folder)}}
 
     # --- PDF documents: plan and strategy ---
@@ -1335,19 +1400,17 @@ class AIRouter:
                                      "rules", 0.4,
                                      "Нет позиции плана без ТЗ. Сначала добавьте пост в план.")
             return RouteDecision("create_shooting_task", {"plan_id": plan_id}, "rules")
-        if re.search(r"видео.{0,30}(рилс|reels|тикток|tiktok|шортс|shorts|пост|1:1|ютуб|youtube)"
-                     r"|(рилс|reels|тикток|tiktok|шортс|shorts).{0,30}видео", low):
+        video_ask = re.search(r"видео.{0,30}(рилс|reels|тикток|tiktok|шортс|shorts|пост|1:1|ютуб|youtube)"
+                              r"|(рилс|reels|тикток|tiktok|шортс|shorts).{0,30}видео", low)
+        if video_ask or re.search(r"субтитр", low):
             paths = _video_paths(text)
             if not paths:
                 return RouteDecision("", {}, "rules", 0.4,
                                      "Пришли путь к видеофайлу или выбери видео в «Публикациях».")
-            return RouteDecision("process_video",
-                                 {"platform": _platform_from_text(low), "paths": paths}, "rules")
-        if re.search(r"субтитр", low):
-            paths = _video_paths(text)
-            if not paths:
-                return RouteDecision("", {}, "rules", 0.4,
-                                     "Пришли путь к видеофайлу или выбери видео в «Публикациях».")
+            if video_ask:
+                return RouteDecision("process_video",
+                                     {"platform": _platform_from_text(low), "paths": paths},
+                                     "rules")
             return RouteDecision("make_subtitles",
                                  {"paths": paths, "language": "ru",
                                   "burn": "srt" not in low}, "rules")
@@ -1355,6 +1418,8 @@ class AIRouter:
             return RouteDecision("export_pdf",
                                  {"kind": "strategy" if "стратег" in low else "plan"},
                                  "rules")
+        if re.search(r"инстаграм|instagram", low) and re.search(r"пакет|публикац|выгруз|собери|подготовь", low):
+            return RouteDecision("instagram_pack", {}, "rules")
         if re.search(r"(собери|сделай|подготовь).{0,20}(пакет|выгруз)|экспорт", low):
             return RouteDecision("export_package", {}, "rules")
         if re.search(r"аналитик|что зашло|что сработал|метрик|вовлеч[её]нност", low):
@@ -1662,6 +1727,9 @@ class AICore:
                                          "paths": list},
                                         self.tools.make_subtitles,
                                         needs_confirmation=lambda a: len(a.get("media_ids") or []) > 3))
+        self.registry.register(ToolSpec("instagram_pack",
+                                        "пакет под Instagram: файлы, подписи, замечания",
+                                        {"dest": str}, self.tools.instagram_pack))
         self.registry.register(ToolSpec("export_pdf", "план или стратегия в PDF",
                                         {"kind": str, "dest": str}, self.tools.export_pdf))
         self.registry.register(ToolSpec("import_materials", "импорт файлов в «Материалы»",
