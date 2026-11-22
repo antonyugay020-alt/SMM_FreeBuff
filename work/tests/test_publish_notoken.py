@@ -84,8 +84,8 @@ check("«нет» отменяет", core.pending is None and "Отменил" i
 
 # 8. как гейт подтверждения связан с dry-run (наблюдение, без оценки)
 spec = core.registry.get("instagram_publish")
-print("8 подтверждение:", "dry-run 1 →", spec.needs_confirmation({"media_id": "m1"}),
-      "| dry-run 0 →", spec.needs_confirmation({"media_id": "m1", "dry_run": "0"}))
+print("8 подтверждение:", "dry-run 1 ->", spec.needs_confirmation({"media_id": "m1"}),
+      "| dry-run 0 ->", spec.needs_confirmation({"media_id": "m1", "dry_run": "0"}))
 
 instagram_auth.requests.get, instagram_auth.requests.post = orig_get, orig_post
 print("FAILS:", fails or "нет")

@@ -1,4 +1,4 @@
-"""Маршрут публикации через чат: текст → правило → handle → гейт → инструмент."""
+"""Маршрут публикации через чат: текст -> правило -> handle -> гейт -> инструмент."""
 import sys, tempfile, json
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2] / "AI_SMM_Work_Architecture_A75"
@@ -140,7 +140,7 @@ finally:
     instagram_auth.requests.get, instagram_auth.requests.post = orig_get, orig_post
 print("7 «да»:", reply.text[:100])
 check("«да» публикует", "Опубликовал" in reply.text and "ig_999" in reply.text, reply.text)
-check("«да»: контейнер → media_publish", any(c[0].endswith("/media_publish") for c in g.writes()), g.writes())
+check("«да»: контейнер -> media_publish", any(c[0].endswith("/media_publish") for c in g.writes()), g.writes())
 
 # 8. В проекте нет материалов — подсказка про импорт, а не догадка
 # 3a уже показал, что «3 поста» не превращается в media_id «3».
