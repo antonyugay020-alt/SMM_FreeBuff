@@ -289,6 +289,24 @@ class ToolRegistry:
 
 NO_DATE, NO_CAPTION, NO_TASK = "без даты", "без подписи", "без ТЗ"
 PLAN_FORMATS = {"пост": "Пост", "reels": "Reels", "рилс": "Reels", "карусель": "Карусель"}
+CAPTION_LIMIT = 400
+
+
+def _shorten_caption(text: str, limit: int = CAPTION_LIMIT) -> str:
+    """Обрезка по границе предложения; если одно предложение не влезает — по последнему пробелу."""
+    text = str(text or "").strip()
+    if len(text) <= limit:
+        return text
+    cut = ""
+    for sentence in re.split(r"(?<=[.!?…])\s+|\n+", text):
+        candidate = f"{cut} {sentence}".strip() if cut else sentence
+        if len(candidate) > limit:
+            break
+        cut = candidate
+    if cut:
+        return cut
+    head = text[:limit - 1].rsplit(" ", 1)[0].rstrip(" ,;:—-\u00ab")
+    return (head or text[:limit - 1]) + "…"
 
 MAX_ISSUES = 15
 NOOP_UNDO = {"op": "noop"}
@@ -1829,6 +1847,9 @@ class AIRouter:
         sections = [f"{s.get('title')}: {s.get('content')}" for s in strategy.get("sections") or []]
         system = ("Ты SMM-стратег. Верни JSON: {\"topics\": [{\"topic\": \"...\", \"rubric\": \"...\", "
                   "\"format\": \"Пост\"}]}. Темы конкретные и разные, без нумерации и без слова «идея». "
+                  "Каждая тема — про гостя и его выгоду: что он получит, попробует, сэкономит или почувствует. "
+                  "Не предлагай темы про то, как гость готовит или обжаривает кофе дома, и про внутренние "
+                  "процессы без пользы для гостя. "
                   "format — только «Пост», «Reels» или «Карусель». Пиши по-русски.")
         user = (f"Бренд-профиль: {json.dumps(profile, ensure_ascii=False)}\n"
                 f"Стратегия: {' | '.join(sections) or 'нет'}\n"
@@ -1858,7 +1879,20 @@ class AIRouter:
         if profile.get("client_name"):
             system += f" Бренд: {profile['client_name']}, ниша: {profile.get('niche') or '—'}."
         text = self._generate(system, brief, "caption")
-        return text or f"{brief}\n\nПодпишитесь, чтобы не пропустить новые посты.\n#smm #контент"
+        if not text:
+            return f"{brief}\n\nПодпишитесь, чтобы не пропустить новые посты.\n#smm #контент"
+        return self._fit_caption(text.strip(), system, brief)
+
+    def _fit_caption(self, text: str, system: str, brief: str) -> str:
+        """Подпись не длиннее CAPTION_LIMIT: сначала просим сократить, потом режем по предложению."""
+        if len(text) <= CAPTION_LIMIT:
+            return text
+        shorter = self._generate(
+            f"{system} Ответь только подписью не длиннее {CAPTION_LIMIT} символов, сохрани 3–5 хэштегов и CTA.",
+            f"{brief}\nСократи этот вариант до {CAPTION_LIMIT} символов:\n{text}", "caption_short")
+        if shorter and len(shorter.strip()) <= CAPTION_LIMIT:
+            return shorter.strip()
+        return _shorten_caption(shorter or text)
 
     # --- small lookups ---
     def _latest_plan_id(self) -> str:
