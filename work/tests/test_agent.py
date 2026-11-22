@@ -260,6 +260,34 @@ ok("лимит шагов не оставил план без ТЗ",
 ok("лимит шагов назван честно", "лимите шагов" in reply.text or "Остановился" in reply.text,
    reply.text)
 
+# --- доделка не переписывает старые посты ---
+dm, core, stub = build([
+    '{"action": "tool", "tool": "create_content_plan", "args": {"count": 2}}',
+    '{"action": "done", "say": "План готов."}',
+    '{"action": "done", "say": "План готов."}'])
+old_id = dm.add_content_plan_item({"topic": "Старый пост про обжарку", "rubric": "Польза",
+                                   "format": "Пост", "date": "05.01.2026",
+                                   "caption": "Старая подпись, её менять нельзя."})
+old_task = dm.create_shooting_task_from_content_plan(old_id)["id"]
+reply = core.handle("добавь два поста в план")
+old = dm.get_content_plan_item(old_id)
+new_items = [item for item in dm.get_content_plan() if item.get("id") != old_id]
+ok("старая подпись не переписана", old.get("caption") == "Старая подпись, её менять нельзя.",
+   old.get("caption"))
+ok("старое ТЗ не пересоздано", old.get("shooting_task_id") == old_task, old.get("shooting_task_id"))
+ok("старое ТЗ осталось одно",
+   len([task for task in dm.get_shooting_tasks()
+        if task.get("content_plan_link") == old_id]) == 1,
+   [task.get("id") for task in dm.get_shooting_tasks()])
+ok("новые посты с подписями",
+   new_items and all(str(item.get("caption") or "").strip() for item in new_items),
+   [(item.get("topic"), item.get("caption")) for item in new_items])
+ok("новые посты с ТЗ",
+   new_items and all(item.get("shooting_task_id") for item in new_items),
+   [(item.get("topic"), item.get("shooting_task_id")) for item in new_items])
+ok("итог говорит только о новых позициях",
+   f"Из {len(new_items)} новых позиций" in reply.text, reply.text)
+
 # --- стратегия из строк, а не словарей, не роняет инструмент ---
 dm, core, stub = build([
     '{"action": "tool", "tool": "create_strategy", "args": {"sections": '

@@ -1991,7 +1991,7 @@ class AIAgent:
         allowed = {name for name in self.registry.names() if name not in AGENT_DENY}
         nudged = False
         finish_nudged = False
-        plan_grew = False
+        new_ids: List[str] = []
         first_say = ""
         unknown: List[str] = []
         for step in range(AGENT_STEPS):
@@ -2024,11 +2024,12 @@ class AIAgent:
                 if kind == "done" and say and not first_say:
                     first_say = say
                 # после нового плана «готово» не принимается, пока нет подписей и ТЗ
-                gaps = self._plan_gaps() if (kind == "done" and plan_grew) else []
+                gaps = self._plan_gaps(new_ids) if (kind == "done" and new_ids) else []
                 if gaps and not finish_nudged:
                     finish_nudged = True
-                    history.append(f"задача не закончена: у плана нет {self._gap_words(gaps)} — "
-                                   f"выполни {', '.join(gaps)}, потом action=done")
+                    history.append(f"задача не закончена: у новых позиций плана нет "
+                                   f"{self._gap_words(gaps)} — выполни "
+                                   f"{self._gap_tool_list(gaps)} для новых позиций, потом action=done")
                     continue
                 if gaps:
                     return AIReply(self._finish_after_plan(gaps, actions, first_say),
@@ -2055,14 +2056,16 @@ class AIAgent:
             spec = self.registry.get(tool)
             raw_args = action.get("args") if isinstance(action.get("args"), dict) else {}
             args = {key: value for key, value in raw_args.items() if key in spec.args}
-            plan_before = len(self.core.dm.get_content_plan())
+            plan_before = {str(item.get("id")) for item in self.core.dm.get_content_plan()}
             reply = self.core._execute(tool, args, "agent")
             actions.extend(reply.actions or [])
-            if len(self.core.dm.get_content_plan()) > plan_before:
-                plan_grew = True
+            for item in self.core.dm.get_content_plan():
+                one = str(item.get("id"))
+                if one not in plan_before and one not in new_ids:
+                    new_ids.append(one)
             history.append(f"{tool}({json.dumps(args, ensure_ascii=False)}) — "
                            f"{reply.text.splitlines()[0] if reply.text else 'готово'}")
-        gaps = self._plan_gaps() if plan_grew else []
+        gaps = self._plan_gaps(new_ids) if new_ids else []
         if gaps:
             return AIReply(self._finish_after_plan(
                 gaps, actions, first_say, note=f"Остановился на лимите шагов ({AGENT_STEPS})."),
@@ -2071,40 +2074,52 @@ class AIAgent:
         return AIReply(f"Остановился на лимите шагов ({AGENT_STEPS}). Что успел:\n{tail}",
                        "agent", actions)
 
-    def _plan_gaps(self) -> List[str]:
-        """Чего не хватает у позиций плана: подписей и ТЗ на съёмку."""
-        plan = self.core.dm.get_content_plan()
-        gaps: List[str] = []
-        if plan and any(not str(item.get("caption") or "").strip() for item in plan):
-            gaps.append("write_captions")
-        if plan and any(not item.get("shooting_task_id") for item in plan):
-            gaps.append("create_shooting_task")
+    def _plan_gaps(self, ids: List[str]) -> List[tuple]:
+        """Чего не хватает у новых позиций этой задачи: подписей и ТЗ. Старые не трогаем."""
+        plan = {str(item.get("id")): item for item in self.core.dm.get_content_plan()}
+        gaps: List[tuple] = []
+        for one in ids:
+            item = plan.get(str(one))
+            if item is None:
+                continue
+            if not str(item.get("caption") or "").strip():
+                gaps.append(("write_captions", str(one)))
+            if not item.get("shooting_task_id"):
+                gaps.append(("create_shooting_task", str(one)))
         return gaps
 
     @staticmethod
-    def _gap_words(gaps: List[str]) -> str:
+    def _gap_words(gaps: List[tuple]) -> str:
         words = []
-        if "write_captions" in gaps:
+        if any(tool == "write_captions" for tool, _ in gaps):
             words.append("подписей")
-        if "create_shooting_task" in gaps:
+        if any(tool == "create_shooting_task" for tool, _ in gaps):
             words.append("ТЗ на съёмку")
         return " и ".join(words)
 
-    def _finish_after_plan(self, gaps: List[str], actions: List[Dict[str, Any]],
+    @staticmethod
+    def _gap_tool_list(gaps: List[tuple]) -> str:
+        return ", ".join(dict.fromkeys(tool for tool, _ in gaps))
+
+    def _finish_after_plan(self, gaps: List[tuple], actions: List[Dict[str, Any]],
                            say: str, note: str = "") -> str:
-        """Довести цепочку после плана: подписи и ТЗ делает тот же журнальный инструмент."""
+        """Доделать подписи и ТЗ только у новых позиций задачи, старые не переписываем."""
         made = []
-        for tool in gaps:
-            reply = self.core._execute(tool, {}, "agent")
+        for tool, plan_id in gaps:
+            reply = self.core._execute(tool, {"plan_id": plan_id}, "agent")
             actions.extend(reply.actions or [])
             made.append(tool)
-        plan = self.core.dm.get_content_plan()
-        captions = sum(1 for item in plan if str(item.get("caption") or "").strip())
-        tasks = sum(1 for item in plan if item.get("shooting_task_id"))
+        touched = list(dict.fromkeys(plan_id for _, plan_id in gaps))
+        plan = {str(item.get("id")): item for item in self.core.dm.get_content_plan()}
+        fresh = [plan[one] for one in touched if one in plan]
+        captions = sum(1 for item in fresh if str(item.get("caption") or "").strip())
+        tasks = sum(1 for item in fresh if item.get("shooting_task_id"))
         lead = " ".join(part for part in (note, say) if part).strip()
-        tail = f"В плане {len(plan)} позиций: с подписью {captions}, с ТЗ {tasks}."
-        if made:
-            tail += f" Довёл до конца сам: {', '.join(made)}."
+        tail = f"Из {len(touched)} новых позиций: с подписью {captions}, с ТЗ {tasks}."
+        if made and not self._plan_gaps(touched):
+            tail += f" Довёл до конца сам: {self._gap_tool_list(gaps)}."
+        elif made:
+            tail += f" Дописал сам: {self._gap_tool_list(gaps)}, остальное надо доделать вручную."
         return f"{lead} {tail}".strip()
 
     @staticmethod
