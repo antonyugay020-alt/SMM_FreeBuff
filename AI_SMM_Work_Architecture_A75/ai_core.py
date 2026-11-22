@@ -1180,6 +1180,33 @@ class AITools:
         slug = re.sub(r"-{2,}", "-", slug).strip("-_")[:limit].strip("-_")
         return slug or fallback
 
+    @staticmethod
+    def _pair_captions(records: List[Dict[str, Any]], plan: List[Dict[str, Any]]
+                       ) -> Tuple[List[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]],
+                                  List[Dict[str, Any]]]:
+        """Связать файл с позицией плана: ссылка `media_id`, затем дата, затем порядок плана."""
+        free = sorted(plan, key=lambda item: (str(item.get("date") or "~"),
+                                             str(item.get("topic") or "")))
+        matched: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+        waiting: List[Dict[str, Any]] = []
+        for record in records:
+            date = str(record.get("date") or "")
+            match = next((item for item in free
+                          if item.get("media_id") and str(item["media_id"]) == str(record.get("id"))),
+                         None)
+            match = match or next((item for item in free
+                                   if date and str(item.get("date") or "") == date), None)
+            if match is None:
+                waiting.append(record)
+                continue
+            free.remove(match)
+            matched.append((record, match))
+        while waiting and free:
+            matched.append((waiting.pop(0), free.pop(0)))
+        order = {id(record): index for index, record in enumerate(records)}
+        pairs = matched + [(record, None) for record in waiting]
+        return sorted(pairs, key=lambda pair: order[id(pair[0])]), free
+
     def instagram_pack(self, dest: str = "") -> Dict[str, Any]:
         """Собрать пакет под Instagram: файлы одобренных материалов, подписи и замечания."""
         approved = [m for m in self.dm.get_media_ready() if m.get("status") == "approved"]
@@ -1192,10 +1219,16 @@ class AITools:
         media_dir = folder / "media"
         media_dir.mkdir(parents=True, exist_ok=True)
 
-        problems: List[str] = []
-        manifest = ["файл;тип;формат;размер;операции"]
+        pairs, orphan_captions = self._pair_captions(approved, plan)
+        problems: List[str] = [f"{item.get('topic')}: нет файла под подпись"
+                               for item in orphan_captions]
+        captions_dir = folder / "captions"
+        captions_dir.mkdir(parents=True, exist_ok=True)
+        manifest = ["файл;дата;тема;подпись;тип;формат;размер;операции"]
+        blocks: List[str] = []
         copied = 0
-        for record in approved:
+        for record, plan_item in pairs:
+            position = plan_item or {}
             path = Path(str(record.get("path") or ""))
             if not path.is_file():
                 problems.append(f"{record.get('name')}: файл не найден")
@@ -1208,22 +1241,25 @@ class AITools:
                 problems.append(f"{record.get('name')}: не скопировался ({exc})")
                 continue
             copied += 1
-            manifest.append(";".join([name, str(record.get("type") or ""),
-                                      str(record.get("size") or ""),
-                                      human_size(path.stat().st_size),
-                                      " ".join(record.get("processed") or [])]))
-
-        captions: List[str] = []
-        for item in plan:
-            caption = str(item.get("caption") or "").strip()
-            tags = " ".join(item.get("hashtags") or [])
-            captions += [f"{item.get('date') or '—'} · {item.get('topic') or '—'}", caption, tags, ""]
-            if not caption:
-                problems.append(f"{item.get('topic')}: нет подписи")
+            caption = str(position.get("caption") or "").strip()
+            tags = " ".join(position.get("hashtags") or [])
+            if caption or tags:
+                (captions_dir / f"{Path(name).stem}.txt").write_text(
+                    "\n".join(part for part in (caption, tags) if part), encoding="utf-8")
+            else:
+                problems.append(f"{name}: нет подписи в плане")
             if not tags:
-                problems.append(f"{item.get('topic')}: нет хэштегов")
+                problems.append(f"{name}: нет хэштегов")
+            blocks += [f"=== {name} ===",
+                       f"{position.get('date') or '—'} · "
+                       f"{position.get('topic') or 'без позиции плана'}", caption, tags, ""]
+            cells = [name, str(position.get("date") or ""),
+                     str(position.get("topic") or ""), "да" if caption else "нет",
+                     str(record.get("type") or ""), str(record.get("size") or ""),
+                     human_size(path.stat().st_size), " ".join(record.get("processed") or [])]
+            manifest.append(";".join(cell.replace(";", ",") for cell in cells))
 
-        (folder / "captions.txt").write_text("\n".join(captions), encoding="utf-8")
+        (folder / "captions.txt").write_text("\n".join(blocks), encoding="utf-8")
         (folder / "manifest.csv").write_text("\n".join(manifest), encoding="utf-8")
         (folder / "problems.txt").write_text("\n".join(problems) or "замечаний нет",
                                               encoding="utf-8")

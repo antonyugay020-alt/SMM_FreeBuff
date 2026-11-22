@@ -57,7 +57,19 @@ PHOTO_PRESETS = (("Кадрировать 4:5 + цвет + сжатие", ["crop
 # Подписи операций из `media.processed`
 PROCESSED_LABELS = {"instagram_reels": "🎬 Reels", "instagram_post": "🎬 Post",
                     "tiktok": "🎬 TikTok", "youtube_shorts": "🎬 Shorts",
-                    "youtube_video": "🎬 YouTube", "subtitles": "💬 Субтитры"}
+                    "youtube_video": "🎬 YouTube", "subtitles": "💬 Субтитры",
+                    "crop": "Кадр", "color": "Цвет", "compress": "Сжатие"}
+
+
+def _processed_marks(item: Dict[str, Any]) -> List[str]:
+    """Подписи операций: незнакомые ключи не выводим сырым текстом."""
+    marks, seen = [], set()
+    for key in item.get("processed") or []:
+        label = PROCESSED_LABELS.get(key)
+        if label and label not in seen:
+            seen.add(label)
+            marks.append(label)
+    return marks
 
 _PROBE: Optional[Any] = None
 
@@ -312,7 +324,7 @@ class MediaCard(QFrame):
         size.setStyleSheet(f"color:{MUTED};font-size:9px;padding:1px 7px;")
         lay.addWidget(size)
 
-        marks = [PROCESSED_LABELS.get(key, key) for key in item.get("processed") or []]
+        marks = _processed_marks(item)
         if marks:
             done = QLabel(_elide(" · ".join(marks), 124))
             done.setStyleSheet(f"color:{TEAL};font-size:9px;padding:1px 7px;")
@@ -544,9 +556,8 @@ class PreviewPanel(QWidget):
                 w.deleteLater()
         text, color = STATUS.get(item.get("status", "pending"), ("—", MUTED))
         self.badge_row.insertWidget(0, _pill(text, color))
-        for key in item.get("processed") or []:
-            self.badge_row.insertWidget(self.badge_row.count() - 1,
-                                        _pill(PROCESSED_LABELS.get(key, key), TEAL))
+        for mark in _processed_marks(item):
+            self.badge_row.insertWidget(self.badge_row.count() - 1, _pill(mark, TEAL))
         self._render()
 
     def _render(self):
@@ -687,7 +698,7 @@ class VideoCompareDialog(QDialog):
         title.setStyleSheet(f"color:{TEXT};font-size:14px;font-weight:700;")
         lay.addWidget(title)
 
-        marks = ", ".join(PROCESSED_LABELS.get(key, key) for key in item.get("processed") or [])
+        marks = ", ".join(_processed_marks(item))
         hint = QLabel(f"{item.get('name', '')} · {marks or 'не обработано'}")
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color:{MUTED};font-size:10px;")
