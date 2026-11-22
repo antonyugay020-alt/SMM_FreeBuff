@@ -36,6 +36,7 @@ def main():
         from PySide6.QtGui import QFont
         from project_manager import ProjectManager
         from gui_main import MainWindow
+        from gui_settings import Settings
     except ImportError as e:
         logger.error(f"Missing dependency: {e}")
         import traceback
@@ -49,7 +50,7 @@ def main():
     project_manager = ProjectManager(str(ROOT_DIR / "data" / "ai_smm_projects.db"))
     projects = project_manager.list_projects()
     if not projects:
-        project_manager.create_project("default", "Теннис", "")
+        project_manager.create_project("default", "Новый проект", "")
 
     config_path = ROOT_DIR / "config" / "config.yaml"
     if config_path.exists():
@@ -65,6 +66,7 @@ def main():
         "videos_dir": str(ROOT_DIR / "media" / "videos"),
         "logs_dir": str(logs_dir),
         "root_dir": str(ROOT_DIR),
+        "settings": Settings(),
     }
 
     logger.info("All components initialized. Starting GUI...")

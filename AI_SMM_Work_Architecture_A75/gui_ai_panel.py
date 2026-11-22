@@ -39,6 +39,8 @@ except ImportError:
         def __init__(self, dm): self.dm = dm
         def distribute(self, query, resp, cat): return {"success": False, "actions": []}
 
+from ai_core import AICore
+
 logger = logging.getLogger(__name__)
 
 
@@ -85,7 +87,8 @@ class AIPanel(QWidget):
 
     def __init__(self, app_state: Dict[str, Any], parent=None):
         super().__init__(parent)
-        self.state = app_state
+        self.state = app_state if isinstance(app_state, dict) else {"config": {}}
+        self.dm = self.state.get("data_manager")
         self.proposal_engine = ProposalEngine()
         self.task_router = AITaskRouter()
         
@@ -96,8 +99,10 @@ class AIPanel(QWidget):
         else:
             logger.warning("Local LLM unavailable. Falling back to simulation.")
             
+        self.ai_core = None
         self._build_ui()
         self._connect_signals()
+        self.set_data_manager(self.dm)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -115,6 +120,16 @@ class AIPanel(QWidget):
         hl.addWidget(title)
         hl.addStretch()
 
+        self.budget_label = QLabel("")
+        self.budget_label.setStyleSheet("color: #8b949e; font-size: 10px; padding-right: 8px;")
+        hl.addWidget(self.budget_label)
+
+        journal_btn = QPushButton("Журнал")
+        journal_btn.setObjectName("topBtn")
+        journal_btn.setStyleSheet("font-size: 11px; padding: 4px 8px;")
+        journal_btn.clicked.connect(lambda: self._send_text("журнал"))
+        hl.addWidget(journal_btn)
+
         clear_btn = QPushButton("🗑️ Очистить")
         clear_btn.setObjectName("topBtn")
         clear_btn.setStyleSheet("font-size: 11px; padding: 4px 8px;")
@@ -129,13 +144,13 @@ class AIPanel(QWidget):
         self.chat_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.chat_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.chat_scroll.setStyleSheet("""
-            QScrollArea { border: none; background-color: #0d1117; }
+            QScrollArea { border: none; background-color: #0a0e13; }
             QScrollBar:vertical { 
-                background-color: #161b22; width: 12px; margin: 0; 
+                background-color: #121820; width: 12px; margin: 0; 
                 border-radius: 6px;
             }
             QScrollBar::handle:vertical { 
-                background-color: #30363d; min-height: 30px; 
+                background-color: #1e252e; min-height: 30px; 
                 border-radius: 6px; 
             }
             QScrollBar::handle:vertical:hover { background-color: #58a6ff; }
@@ -154,7 +169,7 @@ class AIPanel(QWidget):
         input_frame = QFrame()
         input_frame.setObjectName("inputZone")
         input_frame.setStyleSheet("""
-            QFrame#inputZone { background-color: #161b22; border-top: 1px solid #30363d; }
+            QFrame#inputZone { background-color: #121820; border-top: 1px solid #1e252e; }
         """)
         il = QHBoxLayout(input_frame)
         il.setContentsMargins(12, 12, 12, 12)
@@ -165,8 +180,8 @@ class AIPanel(QWidget):
         self.input_box.setMaximumHeight(100)
         self.input_box.setStyleSheet("""
             QTextEdit { 
-                background-color: #0d1117; color: #c9d1d9; 
-                border: 1px solid #30363d; border-radius: 4px; 
+                background-color: #0a0e13; color: #c9d1d9; 
+                border: 1px solid #1e252e; border-radius: 4px; 
                 padding: 10px; font-size: 13px; 
             }
             QTextEdit:focus { border-color: #58a6ff; }
@@ -275,101 +290,85 @@ class AIPanel(QWidget):
         
         self._add_bubble("user", text)
         self.input_box.clear()
+        QTimer.singleShot(0, lambda: self._on_ai_reply(text))
 
-        # Check complexity
-        lower_text = text.lower()
-        is_complex_task = any(kw in lower_text for kw in [
-            "создай кампанию", "разработай стратегию", "подготовь контент",
-            "сгенерируй изображения", "обнови позиционирование"
-        ])
-        
-        if is_complex_task:
-            QTimer.singleShot(500, lambda: self._handle_routed_request(text))
-        else:
-            QTimer.singleShot(500, lambda: self._simulate_response(text))
-    
-    def _handle_routed_request(self, user_text: str):
-        """Process request through AI Task Router."""
-        parsed = self.task_router.parse_request(user_text, project_context=self.state)
-        
-        plan_msg = f"🧠 Проанализировал ваш запрос. Составил план из {len(parsed.sub_tasks)} этапов:"
-        self._add_bubble("assistant", plan_msg)
-        
-        for i, task in enumerate(parsed.sub_tasks, 1):
-            short_desc = task.description[:80] + ("..." if len(task.description) > 80 else "")
-            detail_msg = f"{i}. [{task.task_type.upper()}] → {short_desc}"
-            self._add_bubble("system", detail_msg)
-        
-        exec_result = self.task_router.execute_parsed_request(parsed, self.dm if hasattr(self, 'dm') else None)
-        
-        completion_msg = f"✅ План выполнен! Завершено: {exec_result['completed']} из {exec_result['total_tasks']} задач."
-        self._add_bubble("assistant", completion_msg)
-        
-        details_toggle = QPushButton("Показать детали выполнения")
-        details_toggle.setObjectName("topBtn")
-        details_toggle.setStyleSheet("font-size: 11px; padding: 4px 8px; margin-top: 8px;")
-        details_toggle.clicked.connect(lambda: self._show_execution_details(exec_result))
-        
-        insert_idx = self.chat_layout.count() - 1
-        self.chat_layout.insertWidget(insert_idx, details_toggle)
-        self.chat_scroll.verticalScrollBar().setValue(self.chat_scroll.verticalScrollBar().maximum())
-    
-    def _show_execution_details(self, exec_result: Dict[str, Any]):
-        """Show collapsible details of executed tasks."""
-        details_frame = QFrame()
-        details_frame.setObjectName("detailsPanel")
-        details_frame.setStyleSheet("""
-            QFrame#detailsPanel {
-                background-color: #161b22;
-                border: 1px solid #30363d;
-                border-radius: 6px;
-                padding: 12px;
-                margin: 8px 0;
-            }
-            QLabel#detailTitle {
-                color: #58a6ff;
-                font-size: 14px;
-                font-weight: bold;
-                margin-bottom: 8px;
-            }
-            QTextEdit#detailContent {
-                background-color: #0d1117;
-                color: #c9d1d9;
-                border: none;
-                padding: 8px;
-                font-family: Consolas, monospace;
-                font-size: 11px;
-            }
-        """)
-        
-        dl = QVBoxLayout(details_frame)
-        dl.setSpacing(8)
-        
-        title = QLabel("Детали выполнения")
-        title.setObjectName("detailTitle")
-        dl.addWidget(title)
-        
-        content = QTextEdit()
-        content.setObjectName("detailContent")
-        content.setReadOnly(True)
-        content.setMaximumHeight(200)
-        
-        import json
-        formatted = json.dumps(exec_result, indent=2, ensure_ascii=False)
-        content.setPlainText(formatted)
-        
-        dl.addWidget(content)
-        
-        close_btn = QPushButton("✖ Скрыть детали")
-        close_btn.setObjectName("topBtn")
-        close_btn.setStyleSheet("font-size: 11px; padding: 4px 8px; align-self: flex-end;")
-        close_btn.clicked.connect(lambda: details_frame.deleteLater())
-        dl.addWidget(close_btn)
-        
-        insert_idx = self.chat_layout.count() - 1
-        self.chat_layout.insertWidget(insert_idx, details_frame)
-        self.chat_scroll.verticalScrollBar().setValue(self.chat_scroll.verticalScrollBar().maximum())
+    # === AI core bridge ===
+    def set_data_manager(self, dm):
+        """Rebind the core when the project changes."""
+        self.dm = dm
+        if dm is None:
+            self.ai_core = None
+            return
+        self.ai_core = AICore(dm, self.state.get("settings"))
+        self.ai_core.on_change = self._refresh_workspace
+        self._update_budget()
 
+    def _send_text(self, text: str):
+        self._add_bubble("user", text)
+        self._on_ai_reply(text)
+
+    def _on_ai_reply(self, text: str):
+        if self.ai_core is None:
+            self._add_bubble("assistant", "Ядро AI не подключено: нет проекта.")
+            return
+        try:
+            reply = self.ai_core.handle(text)
+        except Exception as exc:
+            logger.exception("ai core failed")
+            self._add_bubble("assistant", f"Ошибка ядра AI: {exc}")
+            return
+
+        self._add_bubble("assistant", reply.text)
+        for action in reply.actions or []:
+            self._add_action_row(action)
+        self._update_budget()
+        if reply.actions:
+            self._refresh_workspace()
+        self.chat_scroll.verticalScrollBar().setValue(
+            self.chat_scroll.verticalScrollBar().maximum())
+
+    def _add_action_row(self, action: Dict[str, Any]):
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        label = QLabel(f"↩ {action.get('tool')}: {action.get('summary', '')[:60]}")
+        label.setStyleSheet("color: #8b949e; font-size: 10px;")
+        layout.addWidget(label, stretch=1)
+        if action.get("id"):
+            undo_btn = QPushButton("Отменить")
+            undo_btn.setObjectName("topBtn")
+            undo_btn.setStyleSheet("font-size: 10px; padding: 2px 8px;")
+            undo_btn.clicked.connect(lambda checked=False, aid=action["id"]: self._undo(aid))
+            layout.addWidget(undo_btn)
+        insert_idx = self.chat_layout.count() - 1
+        self.chat_layout.insertWidget(insert_idx, row)
+
+    def _undo(self, action_id: str):
+        if self.ai_core is None:
+            return
+        reply = self.ai_core.undo(action_id)
+        self._add_bubble("assistant", reply.text)
+        self._refresh_workspace()
+
+    def _update_budget(self):
+        if not self.ai_core:
+            self.budget_label.setText("")
+            return
+        try:
+            spent = self.ai_core.budget.spent_month()
+            limit = self.ai_core.budget.limit
+            self.budget_label.setText(f"{spent:.2f} $ / {limit:.0f} $")
+        except Exception:
+            self.budget_label.setText("")
+
+    def _refresh_workspace(self):
+        win = self.window()
+        if hasattr(win, "refresh_stats"):
+            win.refresh_stats()
+        if hasattr(win, "current_section"):
+            win._on_nav(win.current_section)
+    
     def _build_system_prompt(self):
         """Base system prompt enriched with live project context."""
         base = ("Ты опытный SMM менеджер и стратег. Помогай пользователю создавать кампании, "
@@ -388,83 +387,6 @@ class AIPanel(QWidget):
         except Exception as e:
             logger.warning(f"Context build failed: {e}")
         return base
-
-    def _simulate_response(self, user_input: str):
-        """Generate response using Local LLM or fallback to mock."""
-        lower_input = user_input.lower()
-        
-        # ATTEMPT REAL GENERATION VIA LOCAL LLM FIRST
-        if hasattr(self, 'local_llm') and getattr(self.local_llm, 'available', False):
-            sys_prompt = self._build_system_prompt()
-            
-            try:
-                real_resp = self.local_llm.generate(user_input, system_prompt=sys_prompt)
-                
-                if real_resp and len(real_resp.strip()) > 10:
-                    self._add_bubble("assistant", real_resp)
-                    
-                    # SAFE CATEGORY DETECTION INLINE
-                    lc = user_input.lower()
-                    cat = "general"
-                    if any(w in lc for w in ['стратег', 'позицион']): cat = "strategy"
-                    elif any(w in lc for w in ['контент', 'план']): cat = "content_plan"
-                    elif any(w in lc for w in ['съёмк', 'фото', 'видео']): cat = "shooting"
-                    elif any(w in lc for w in ['обработ', 'фильтр']): cat = "processing"
-                    
-                    proposal = self.proposal_engine.create_from_ai_response(real_resp, context=user_input, category=cat)
-                    if proposal:
-                        self._show_proposal_card(proposal)
-                        
-                    logger.info("Used REAL Local LLM response.")
-                    
-                    # TRIGGER CONTENT DISTRIBUTION AUTOMATICALLY
-                    try:
-                        win = self.window()
-                        if hasattr(win, 'data_manager'):
-                            dm = win.data_manager
-                            dist = ContentDistributor(dm)
-                            res = dist.distribute(user_input, real_resp, cat)
-                            if res["success"]:
-                                notify_msg = "\n\n✅ Контент сохранён:\n" + "\n".join(res["actions"])
-                                self._add_bubble("system", notify_msg)
-                                if hasattr(win, 'refresh_stats'):
-                                    win.refresh_stats()
-                    except Exception as e:
-                        logger.error(f"Distribution failed: {e}")
-                        
-                    return  # Exit early
-                    
-            except Exception as ex:
-                logger.warning(f"Local LLM attempt failed gracefully falling back: {ex}")
-        
-        # ORIGINAL MOCK LOGIC BELOW
-        if "вариант" in lower_input or "идея" in lower_input or "стратегия" in lower_input:
-            response = f"""Я проанализировал ваш запрос «{user_input}». Вот несколько вариантов решения:
-
-Вариант 1: Агрессивный маркетинг
-Описание: Фокус на быстрых результатах и скидках.
-Плюсы: Быстрый рост базы клиентов.
-Минусы: Низкая лояльность, демпинг цен.
-
-Вариант 2: Премиум позиционирование
-Описание: Акцент на эксклюзивности и качестве сервиса.
-Плюсы: Высокий средний чек, лояльная аудитория.
-Минусы: Долгий цикл продаж.
-
-Вариант 3: Гибридный подход
-Описание: Баланс между доступностью и качеством.
-Плюсы: Универсальность.
-Минусы: Размытое позиционирование."""
-            
-            self._add_bubble("assistant", response)
-            
-            proposal = self.proposal_engine.create_from_ai_response(response, context=user_input, category="strategy")
-            if proposal:
-                self._show_proposal_card(proposal)
-                
-        else:
-            response = f"AI получил сообщение: «{user_input}». Это тестовый режим."
-            self._add_bubble("assistant", response)
 
     def _add_bubble(self, role: str, text: str, timestamp: str = ""):
         """Add a chat bubble to the UI with PROPER WORD WRAP."""
@@ -558,8 +480,8 @@ class AIPanel(QWidget):
                 font-style: italic;
             }
             QFrame#optionRow {
-                background-color: #0d1117;
-                border: 1px solid #30363d;
+                background-color: #0a0e13;
+                border: 1px solid #1e252e;
                 border-radius: 6px;
                 padding: 10px;
                 margin: 8px 0;
@@ -602,7 +524,7 @@ class AIPanel(QWidget):
             QPushButton#dismissBtn {
                 background-color: transparent;
                 color: #8b949e;
-                border: 1px solid #30363d;
+                border: 1px solid #1e252e;
                 border-radius: 4px;
                 padding: 8px 12px;
                 font-size: 12px;

@@ -30,10 +30,12 @@ class ContentDistributor:
             # Try to parse strategy document structure
             parsed_strategy = self._parse_strategy_document(ai_response)
             if parsed_strategy:
-                current_strat = self.dm.get_strategy() or {}
-                updated_strat = {**current_strat, **parsed_strategy}
-                self.dm.update_strategy(updated_strat)
-                actions_taken.append("Updated Strategy section")
+                updated = []
+                for section_id, content in parsed_strategy.items():
+                    if self.dm.update_strategy_section(section_id, content):
+                        updated.append(section_id)
+                if updated:
+                    actions_taken.append("Updated Strategy blocks: " + ", ".join(updated))
                 
         elif category == "content_plan":
             # Parse list of posts/topics
@@ -50,8 +52,8 @@ class ContentDistributor:
                     "id": f"cp_{datetime.now().strftime('%Y%m%d%H%M%S')}_{len(items)}",
                     "date": date_str,
                     "topic": item.get("topic", ""),
-                    "format": item.get("format", "Post"),
-                    "status": "Planned",
+                    "format": item.get("format", "Пост"),
+                    "status": "Запланировано",
                     "source": "AI Generated"
                 }
                 self.dm.add_content_plan_item(new_entry)
@@ -97,7 +99,7 @@ class ContentDistributor:
             "about": r'(?:О проекте|About).*?\n(.*?)(?=##|\*\*|$)',
             "audience": r'(?:Целевая аудитория|Target Audience).*?\n(.*?)(?=##|\*\*|$)',
             "positioning": r'(?:Позиционирование|Positioning).*?\n(.*?)(?=##|\*\*|$)',
-            "usp": r'(?:УТП|Unique Selling Proposition).*?\n(.*?)(?=##|\*\*|$)',
+            "utp": r'(?:УТП|Unique Selling Proposition).*?\n(.*?)(?=##|\*\*|$)',
         }
         
         for key, pattern in patterns.items():

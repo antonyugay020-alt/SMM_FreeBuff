@@ -103,6 +103,34 @@ class ProjectManager:
             logger.error(f"Failed to create project: {e}")
             return False
     
+    def rename_project(self, project_id: str, name: str,
+                       description: Optional[str] = None) -> bool:
+        try:
+            now = datetime.utcnow().isoformat()
+            if description is None:
+                self.conn.execute("UPDATE projects SET name = ?, updated_at = ? WHERE id = ?",
+                                  (name, now, project_id))
+            else:
+                self.conn.execute(
+                    "UPDATE projects SET name = ?, description = ?, updated_at = ? WHERE id = ?",
+                    (name, description, now, project_id))
+            self.conn.commit()
+            logger.info(f"Project renamed: {project_id} -> {name}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to rename project: {e}")
+            return False
+
+    def get_project(self, project_id: str) -> Optional[Dict[str, Any]]:
+        for project in self.list_projects():
+            if project["id"] == project_id:
+                return project
+        return None
+
+    def project_dir(self, project_id: str) -> Path:
+        """Where the project database and its files live."""
+        return Path(__file__).resolve().parent.parent / "data" / "projects" / project_id
+
     def list_projects(self) -> List[Dict[str, Any]]:
         cursor = self.conn.cursor()
         cursor.execute("SELECT id, name, description, created_at, updated_at FROM projects ORDER BY updated_at DESC")

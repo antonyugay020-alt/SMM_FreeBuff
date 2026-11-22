@@ -37,9 +37,9 @@ class MediaCard(QFrame):
         self.setObjectName("thumb")
         self.setFrameShape(QFrame.NoFrame)
         self.setStyleSheet("""
-            QFrame#thumb { background-color:#0d1117; border:2px solid #30363d; border-radius:6px; }
+            QFrame#thumb { background-color:#0a0e13; border:2px solid #1e252e; border-radius:6px; }
             QFrame#thumb:hover { border-color:#58a6ff; }
-            QFrame#thumb.selected { border-color:#1f6feb; background-color:#161b22; }
+            QFrame#thumb.selected { border-color:#1f6feb; background-color:#121820; }
         """)
 
         lay = QVBoxLayout(self)
@@ -116,9 +116,9 @@ class MediaCard(QFrame):
         is_checked = (int(state) & 2) != 0  # Qt.Checked == 2
         self.selected = bool(is_checked)
         self.setStyleSheet(
-            "QFrame#thumb{background-color:#161b22;border:2px solid #1f6feb;border-radius:6px;}"
+            "QFrame#thumb{background-color:#121820;border:2px solid #1f6feb;border-radius:6px;}"
             if self.selected else
-            "QFrame#thumb{background-color:#0d1117;border:2px solid #30363d;border-radius:6px;}QFrame#thumb:hover{border-color:#58a6ff;}"
+            "QFrame#thumb{background-color:#0a0e13;border:2px solid #1e252e;border-radius:6px;}QFrame#thumb:hover{border-color:#58a6ff;}"
         )
 
 
@@ -133,8 +133,8 @@ class MediaListRow(QFrame):
         self.selected = False
         self._drag_pos = None
         self.setStyleSheet("""
-            QFrame{background-color:#0d1117;border:1px solid #30363d;border-radius:4px;padding:6px;}
-            QFrame:hover{background-color:#161b22;border-color:#58a6ff;}
+            QFrame{background-color:#0a0e13;border:1px solid #1e252e;border-radius:4px;padding:6px;}
+            QFrame:hover{background-color:#121820;border-color:#58a6ff;}
         """)
         lay = QHBoxLayout(self); lay.setContentsMargins(8, 6, 8, 6); lay.setSpacing(12)
         self.checkbox = QCheckBox()
@@ -196,7 +196,7 @@ class MediaColumn(QFrame):
         self.cards = []
 
         self.setObjectName("zone")
-        self.setStyleSheet(f"QFrame#zone{{background-color:#161b22;border:1px solid #30363d;border-top:4px solid {color};border-radius:6px;}}")
+        self.setStyleSheet(f"QFrame#zone{{background-color:#121820;border:1px solid #1e252e;border-top:4px solid {color};border-radius:6px;}}")
         self.setAcceptDrops(True)
 
         lay = QVBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(0)
@@ -229,7 +229,7 @@ class MediaColumn(QFrame):
         act.addStretch(); lay.addLayout(act)
 
         self.scroll = QScrollArea(); self.scroll.setWidgetResizable(True)
-        self.scroll.setStyleSheet("border:none;background-color:#0d1117;")
+        self.scroll.setStyleSheet("border:none;background-color:#0a0e13;")
         self.inner = QWidget()
         self.inner_lay = QVBoxLayout(self.inner)
         self.inner_lay.setContentsMargins(12, 8, 12, 12); self.inner_lay.setSpacing(8)
@@ -312,7 +312,7 @@ class MediaColumn(QFrame):
         if e.mimeData().hasFormat(DRAG_TYPE):
             e.acceptProposedAction()
     def dragLeaveEvent(self, e):
-        self.setStyleSheet(f"QFrame#zone{{background-color:#161b22;border:1px solid #30363d;border-top:4px solid {self.color};border-radius:6px;}}")
+        self.setStyleSheet(f"QFrame#zone{{background-color:#121820;border:1px solid #1e252e;border-top:4px solid {self.color};border-radius:6px;}}")
     def dropEvent(self, e):
         if not e.mimeData().hasFormat(DRAG_TYPE):
             return
@@ -321,7 +321,7 @@ class MediaColumn(QFrame):
             src = bytes(e.mimeData().data(b"zone")).decode('utf-8')
         except Exception as ex:
             logger.error(f"drop parse: {ex}"); return
-        self.setStyleSheet(f"QFrame#zone{{background-color:#161b22;border:1px solid #30363d;border-top:4px solid {self.color};border-radius:6px;}}")
+        self.setStyleSheet(f"QFrame#zone{{background-color:#121820;border:1px solid #1e252e;border-top:4px solid {self.color};border-radius:6px;}}")
         par = self.parent()
         while par and not isinstance(par, MediaContentSection):
             par = par.parent()
@@ -336,16 +336,16 @@ class ProcessingPanel(QWidget):
         super().__init__(parent)
         self.dm = data_manager
         self.current_source = None
-        self.setStyleSheet("background-color:#161b22;border-left:1px solid #30363d;")
+        self.setStyleSheet("background-color:#121820;border-left:1px solid #1e252e;")
         lay = QVBoxLayout(self); lay.setContentsMargins(16, 16, 16, 16); lay.setSpacing(14)
 
-        t = QLabel("🎨 Обработка"); t.setStyleSheet("color:#e6edf3;font-size:16px;font-weight:bold;border-bottom:1px solid #30363d;padding-bottom:8px;")
+        t = QLabel("🎨 Обработка"); t.setStyleSheet("color:#e6edf3;font-size:16px;font-weight:bold;border-bottom:1px solid #1e252e;padding-bottom:8px;")
         lay.addWidget(t)
 
         s1 = QLabel("1️⃣ Исходник:"); s1.setStyleSheet("color:#58a6ff;font-size:12px;font-weight:bold;"); lay.addWidget(s1)
         self.source_preview = QLabel("👈 Кликни на карточку в 'Исходники'")
         self.source_preview.setAlignment(Qt.AlignCenter); self.source_preview.setMinimumHeight(120)
-        self.source_preview.setStyleSheet("background-color:#0d1117;border:2px dashed #30363d;border-radius:6px;font-size:13px;color:#8b949e;padding:20px;")
+        self.source_preview.setStyleSheet("background-color:#0a0e13;border:2px dashed #1e252e;border-radius:6px;font-size:13px;color:#8b949e;padding:20px;")
         lay.addWidget(self.source_preview)
 
         s2 = QLabel("2️⃣ Эталон (опционально):"); s2.setStyleSheet("color:#bc8cff;font-size:12px;font-weight:bold;margin-top:8px;"); lay.addWidget(s2)
@@ -375,14 +375,14 @@ class ProcessingPanel(QWidget):
         s4 = QLabel("4️⃣ Результат:"); s4.setStyleSheet("color:#3fb950;font-size:12px;font-weight:bold;margin-top:8px;"); lay.addWidget(s4)
         self.result_preview = QLabel("Здесь появится результат обработки")
         self.result_preview.setAlignment(Qt.AlignCenter); self.result_preview.setMinimumHeight(100)
-        self.result_preview.setStyleSheet("background-color:#0d1117;border:2px dashed #30363d;border-radius:6px;font-size:12px;color:#8b949e;padding:20px;")
+        self.result_preview.setStyleSheet("background-color:#0a0e13;border:2px dashed #1e252e;border-radius:6px;font-size:12px;color:#8b949e;padding:20px;")
         lay.addWidget(self.result_preview)
         lay.addStretch()
 
     def set_source(self, fd):
         self.current_source = fd
         self.source_preview.setText(f"✅ {fd['name']}\n{fd.get('size','')}")
-        self.source_preview.setStyleSheet("background-color:#0d1117;border:2px solid #238636;border-radius:6px;font-size:13px;color:#e6edf3;padding:20px;")
+        self.source_preview.setStyleSheet("background-color:#0a0e13;border:2px solid #238636;border-radius:6px;font-size:13px;color:#e6edf3;padding:20px;")
 
     def _on_process(self):
         if not self.current_source:
@@ -391,13 +391,13 @@ class ProcessingPanel(QWidget):
         if not req:
             QMessageBox.warning(self, "Внимание", "Введи запрос на обработку!"); return
         self.result_preview.setText("⏳ Обработка...")
-        self.result_preview.setStyleSheet("background-color:#0d1117;border:2px solid #9e6a03;border-radius:6px;font-size:13px;color:#e6edf3;padding:20px;")
+        self.result_preview.setStyleSheet("background-color:#0a0e13;border:2px solid #9e6a03;border-radius:6px;font-size:13px;color:#e6edf3;padding:20px;")
         self.process_btn.setEnabled(False)
         import time; time.sleep(1.5)
         rn = f"processed_{self.current_source['name']}"
         eng = "OpenAI" if self.engine_combo.currentIndex() == 1 else "Stable Diffusion"
         self.result_preview.setText(f"✅ Готово!\n\n📄 {rn}\n🔧 Запрос: {req[:50]}\n🤖 Движок: {eng}")
-        self.result_preview.setStyleSheet("background-color:#0d1117;border:2px solid #238636;border-radius:6px;font-size:12px;color:#e6edf3;padding:16px;")
+        self.result_preview.setStyleSheet("background-color:#0a0e13;border:2px solid #238636;border-radius:6px;font-size:12px;color:#e6edf3;padding:16px;")
         self.process_btn.setEnabled(True)
         QMessageBox.information(self, "Успех", f"Файл обработан:\n{rn}")
 
@@ -449,7 +449,7 @@ class MediaContentSection(QWidget):
 
         splitter.setStretchFactor(0, 3); splitter.setStretchFactor(1, 1)
         splitter.setHandleWidth(6); splitter.setSizes([1100, 400])
-        splitter.setStyleSheet("QSplitter::handle{background-color:#30363d;border-radius:2px;}QSplitter::handle:hover{background-color:#58a6ff;}")
+        splitter.setStyleSheet("QSplitter::handle{background-color:#1e252e;border-radius:2px;}QSplitter::handle:hover{background-color:#58a6ff;}")
         lay.addWidget(splitter, 1)
 
     def _switch_mode(self, mode):
@@ -493,7 +493,7 @@ class MediaContentSection(QWidget):
 
     def on_ready_selected(self, fd, zone):
         self.processing_panel.result_preview.setText(f"📄 {fd['name']}\n{fd.get('size','')}\nСтатус: {fd.get('status','?')}")
-        self.processing_panel.result_preview.setStyleSheet("background-color:#0d1117;border:2px solid #3fb950;border-radius:6px;font-size:13px;color:#e6edf3;padding:20px;")
+        self.processing_panel.result_preview.setStyleSheet("background-color:#0a0e13;border:2px solid #3fb950;border-radius:6px;font-size:13px;color:#e6edf3;padding:20px;")
 
     def move_card(self, fd, from_zone, to_zone):
         if from_zone == to_zone:

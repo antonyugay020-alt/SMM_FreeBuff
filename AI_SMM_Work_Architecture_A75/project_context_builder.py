@@ -61,6 +61,17 @@ def build_context(dm, max_chars=MAX_CHARS):
             if isinstance(inner, str) and inner.strip():
                 parts.append(f"{label}: {_clip(inner, 300)}")
 
+    # DataManager stores the strategy as a list of document sections
+    sections = strat.get("sections")
+    if isinstance(sections, list):
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            label = section.get("title") or section.get("id") or "Блок"
+            content = section.get("content") or ""
+            if isinstance(content, str) and content.strip():
+                parts.append(f"{label}: {_clip(content, 300)}")
+
     # --- Recent content plan items ---
     plan = []
     try:
@@ -83,7 +94,7 @@ def build_context(dm, max_chars=MAX_CHARS):
             parts.append("Последние пункты контент-плана:\n" + "\n".join(lines))
 
     # --- Media stats ---
-    media = data.get("media") or data.get("media_content") or []
+    media = data.get("media") or data.get("media_sources") or []
     if isinstance(media, list) and media:
         parts.append(f"Медиа-файлов в проекте: {len(media)}")
 

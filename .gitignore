@@ -1,6 +1,12 @@
-﻿__pycache__/
+__pycache__/
 *.py[cod]
 venv/
 *.db
 data/logs/*.log
 config/config.yaml
+config/settings.json
+.venv/
+*.db-wal
+*.db-shm
+data/projects/*/backups/
+media/images/.thumbs/

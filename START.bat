@@ -4,7 +4,7 @@ title AI SMM Manager
 cd /d "%~dp0"
 
 if not exist "venv\Scripts\python.exe" (
-    echo [ERROR] venv not found. Run bootstrap_sprint1.ps1
+    echo [ERROR] venv not found. venv missing: python -m venv venv, then pip install -r AI_SMM_Work_Architecture_A75\requirements.txt
     pause
     exit /b 1
 )

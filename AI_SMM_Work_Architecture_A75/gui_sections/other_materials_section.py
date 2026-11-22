@@ -12,59 +12,26 @@ from PySide6.QtGui import QPixmap, QColor
 
 logger = logging.getLogger(__name__)
 
-# Demo folder structure
-DEMO_FOLDERS = {
-    "archive": {
-        "name": "📁 Архив",
-        "desc": "Старые кампании и неиспользованные наработки",
-        "files": [
-            {"name": "campaign_summer_2025.zip", "type": "archive", "size": "245 MB", "date": "15.08.2025", "tags": ["архив", "лето2025"]},
-            {"name": "old_logo_variants.psd", "type": "image", "size": "12 MB", "date": "10.03.2025", "tags": ["логотип", "дизайн"]},
-        ]
-    },
-    "buffer": {
-        "name": "📁 Буфер",
-        "desc": "Загружено, но ещё не распределено",
-        "files": [
-            {"name": "random_photo_001.jpg", "type": "image", "size": "3.2 MB", "date": "10.11.2026", "tags": ["буфер"]},
-            {"name": "meeting_notes.docx", "type": "document", "size": "156 KB", "date": "08.11.2026", "tags": ["встреча", "заметки"]},
-        ]
-    },
-    "documents": {
-        "name": "📁 Документы",
-        "desc": "Брифы, гайдлайны, договоры",
-        "files": [
-            {"name": "brand_guidelines_v2.pdf", "type": "document", "size": "8.5 MB", "date": "01.09.2026", "tags": ["бренд", "гайдлайн"]},
-            {"name": "contract_photographer.pdf", "type": "document", "size": "245 KB", "date": "15.10.2026", "tags": ["договор", "фотограф"]},
-            {"name": "brief_november.docx", "type": "document", "size": "89 KB", "date": "01.11.2026", "tags": ["бриф", "ноябрь"]},
-        ]
-    },
-    "references": {
-        "name": "📁 Референсы",
-        "desc": "Визуальные референсы бренда",
-        "files": [
-            {"name": "moodboard_tennis.jpg", "type": "image", "size": "5.1 MB", "date": "20.10.2026", "tags": ["мудборд", "теннис"]},
-            {"name": "color_palette.png", "type": "image", "size": "1.2 MB", "date": "20.10.2026", "tags": ["цвета", "палитра"]},
-            {"name": "font_examples.pdf", "type": "document", "size": "3.4 MB", "date": "20.10.2026", "tags": ["шрифты", "типографика"]},
-        ]
-    },
-    "templates": {
-        "name": "📁 Шаблоны",
-        "desc": "Шаблоны постов, stories, документов",
-        "files": [
-            {"name": "instagram_post_template.psd", "type": "image", "size": "15 MB", "date": "01.10.2026", "tags": ["шаблон", "instagram"]},
-            {"name": "stories_template.psd", "type": "image", "size": "8 MB", "date": "01.10.2026", "tags": ["шаблон", "stories"]},
-        ]
-    }
+# Folder structure only; files come from the project data
+FOLDER_META = {
+    "archive": {"name": "📁 Архив", "desc": "Старые кампании и неиспользованные наработки"},
+    "buffer": {"name": "📁 Буфер", "desc": "Загружено, но ещё не распределено"},
+    "documents": {"name": "📁 Документы", "desc": "Брифы, гайдлайны, договоры"},
+    "references": {"name": "📁 Референсы", "desc": "Визуальные референсы бренда"},
+    "templates": {"name": "📁 Шаблоны", "desc": "Шаблоны постов, stories, документов"},
 }
 
-FILE_ICONS = {
-    "image": "🖼️",
-    "video": "🎬",
-    "document": "📄",
-    "archive": "📦",
-    "other": "📎",
-}
+
+def folders_from_data(data_manager) -> Dict[str, Dict[str, Any]]:
+    """Build the folder tree from project data instead of a demo constant."""
+    files = {}
+    if data_manager is not None and hasattr(data_manager, "get_other_files"):
+        files = data_manager.get_other_files() or {}
+    folders = {}
+    for folder_id, meta_item in FOLDER_META.items():
+        folders[folder_id] = {"name": meta_item["name"], "desc": meta_item["desc"],
+                              "files": list(files.get(folder_id, []))}
+    return folders
 
 
 class FileTree(QWidget):
@@ -82,15 +49,15 @@ class FileTree(QWidget):
         layout.setSpacing(0)
 
         title = QLabel("📂 Папки")
-        title.setStyleSheet("color: #e6edf3; font-size: 14px; font-weight: bold; padding: 12px; background-color: #161b22; border-bottom: 1px solid #30363d;")
+        title.setStyleSheet("color: #e6edf3; font-size: 14px; font-weight: bold; padding: 12px; background-color: #121820; border-bottom: 1px solid #1e252e;")
         layout.addWidget(title)
 
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.setStyleSheet("""
-            QTreeWidget { background-color: #0d1117; color: #c9d1d9; border: none; font-size: 12px; }
+            QTreeWidget { background-color: #0a0e13; color: #c9d1d9; border: none; font-size: 12px; }
             QTreeWidget::item { padding: 8px; border-radius: 4px; }
-            QTreeWidget::item:hover { background-color: #161b22; }
+            QTreeWidget::item:hover { background-color: #121820; }
             QTreeWidget::item:selected { background-color: #1f6feb; color: white; }
         """)
         self.tree.itemClicked.connect(self._on_item_clicked)
@@ -224,18 +191,18 @@ class FilePreview(QWidget):
         layout.setSpacing(12)
 
         title = QLabel("👁 Предпросмотр")
-        title.setStyleSheet("color: #e6edf3; font-size: 14px; font-weight: bold; border-bottom: 1px solid #30363d; padding-bottom: 8px;")
+        title.setStyleSheet("color: #e6edf3; font-size: 14px; font-weight: bold; border-bottom: 1px solid #1e252e; padding-bottom: 8px;")
         layout.addWidget(title)
 
         self.preview_label = QLabel("Выберите файл для предпросмотра")
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.preview_label.setMinimumHeight(300)
-        self.preview_label.setStyleSheet("background-color: #0d1117; border: 2px dashed #30363d; border-radius: 6px; font-size: 14px; color: #8b949e; padding: 40px;")
+        self.preview_label.setStyleSheet("background-color: #0a0e13; border: 2px dashed #1e252e; border-radius: 6px; font-size: 14px; color: #8b949e; padding: 40px;")
         layout.addWidget(self.preview_label, stretch=1)
 
         # File info
         self.info_label = QLabel("")
-        self.info_label.setStyleSheet("color: #8b949e; font-size: 11px; padding: 8px; background-color: #161b22; border-radius: 4px;")
+        self.info_label.setStyleSheet("color: #8b949e; font-size: 11px; padding: 8px; background-color: #121820; border-radius: 4px;")
         layout.addWidget(self.info_label)
 
         # Actions
@@ -263,7 +230,7 @@ class FilePreview(QWidget):
     def set_file(self, file_data: Dict[str, Any]):
         """Show file preview."""
         self.preview_label.setText(f"📄 {file_data['name']}\n\nПредпросмотр недоступен для этого типа файла")
-        self.preview_label.setStyleSheet("background-color: #0d1117; border: 2px solid #30363d; border-radius: 6px; font-size: 13px; color: #e6edf3; padding: 40px;")
+        self.preview_label.setStyleSheet("background-color: #0a0e13; border: 2px solid #1e252e; border-radius: 6px; font-size: 13px; color: #e6edf3; padding: 40px;")
 
         info = f"Тип: {file_data['type']}\nРазмер: {file_data['size']}\nДата: {file_data['date']}\nТеги: {', '.join(file_data.get('tags', []))}"
         self.info_label.setText(info)
@@ -274,7 +241,12 @@ class OtherMaterialsSection(QWidget):
 
     def __init__(self, app_state: Dict[str, Any], parent=None):
         super().__init__(parent)
-        self.state = app_state
+        self.state = app_state if isinstance(app_state, dict) else {}
+        data_manager = self.state.get("data_manager") if isinstance(app_state, dict) else None
+        self.dm = data_manager if hasattr(data_manager, "get_other_files") else app_state
+        if not hasattr(self.dm, "get_other_files"):
+            self.dm = None
+        self.folders = folders_from_data(self.dm)
         self.current_folder = "buffer"
         self._build_ui()
 
@@ -312,7 +284,7 @@ class OtherMaterialsSection(QWidget):
         splitter = QSplitter(Qt.Horizontal)
 
         # Left: folder tree
-        self.file_tree = FileTree(DEMO_FOLDERS)
+        self.file_tree = FileTree(self.folders)
         self.file_tree.folder_selected.connect(self._on_folder_selected)
         self.file_tree.setFixedWidth(250)
         splitter.addWidget(self.file_tree)
@@ -338,7 +310,7 @@ class OtherMaterialsSection(QWidget):
         splitter.setHandleWidth(6)
         splitter.setSizes([250, 700, 300])
         splitter.setStyleSheet("""
-            QSplitter::handle { background-color: #30363d; border-radius: 2px; }
+            QSplitter::handle { background-color: #1e252e; border-radius: 2px; }
             QSplitter::handle:hover { background-color: #58a6ff; }
         """)
 
@@ -352,11 +324,11 @@ class OtherMaterialsSection(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
-        folder_data = DEMO_FOLDERS.get(folder_id, {"name": "Неизвестно", "files": []})
+        folder_data = self.folders.get(folder_id, {"name": "Неизвестно", "desc": "", "files": []})
         
         # Folder title
         folder_title = QLabel(f"{folder_data['name']} — {folder_data['desc']}")
-        folder_title.setStyleSheet("color: #e6edf3; font-size: 16px; font-weight: bold; padding: 16px; background-color: #161b22; border-bottom: 1px solid #30363d;")
+        folder_title.setStyleSheet("color: #e6edf3; font-size: 16px; font-weight: bold; padding: 16px; background-color: #121820; border-bottom: 1px solid #1e252e;")
         self.file_list_layout.addWidget(folder_title)
 
         # File list

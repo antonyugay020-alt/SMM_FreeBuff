@@ -1,437 +1,440 @@
-"""Strategy section: Living document created via AI dialogue."""
+"""Strategy section: живой документ с блоками, правкой и AI-действиями."""
 import logging
-import json
-from pathlib import Path
-from typing import Dict, Any, List, Optional
-from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QFrame, QTextEdit, QScrollArea, QSplitter, QMessageBox,
-    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QListWidget, QListWidgetItem, QComboBox)
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QTextDocument
+    QPushButton, QFrame, QTextEdit, QScrollArea, QMessageBox, QInputDialog,
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView)
+from PySide6.QtCore import Qt, Signal, QThread
+
+from gui_theme import TEXT, MUTED, TEAL, PURPLE
 
 logger = logging.getLogger(__name__)
 
-# Demo strategy as document sections
-DEMO_STRATEGY_SECTIONS = [
-    {
-        "id": "about",
-        "title": "О проекте",
-        "icon": "📋",
-        "content": "Семейный теннисный клуб «Чемпион» работает с 2018 года. Основная специализация — обучение детей и взрослых теннису с нуля до соревновательного уровня. В клубе 4 корта (2 закрытых, 2 открытых), профессиональные тренеры с опытом работы в детских спортивных школах."
-    },
-    {
-        "id": "audience",
-        "title": "Целевая аудитория",
-        "icon": "👥",
-        "content": "Основной сегмент — родители детей 6-14 лет, которые ищут секцию для развития ребёнка. Они ценят профессиональный подход, безопасность и возможность отслеживать прогресс. Вторичный сегмент — взрослые любители 30-45 лет, играющие для здоровья и удовольствия. Третичный — профессионалы, готовящиеся к турнирам."
-    },
-    {
-        "id": "positioning",
-        "title": "Позиционирование",
-        "icon": "🎯",
-        "content": "«Первый шаг к большому теннису» — клуб, где каждый ученик получает персональный план развития. Мы не просто учим бить по мячу, мы воспитываем характер через спорт. Дружеская атмосфера сочетается с профессиональным подходом к тренировкам."
-    },
-    {
-        "id": "utp",
-        "title": "Уникальное торговое предложение",
-        "icon": "💎",
-        "content": "Первое занятие бесплатно + персональный план развития для каждого ученика. Родители получают ежемесячный отчёт о прогрессе ребёнка с видеоанализом техники. Взрослые участники могут гибко планировать тренировки через мобильное приложение."
-    },
-    {
-        "id": "tone",
-        "title": "Tone of Voice",
-        "icon": "🗣️",
-        "content": "Дружелюбный, мотивирующий, экспертный но не занудный. Мы говорим на языке родителей и детей, избегаем спортивного жаргона. Используем истории успеха учеников, показываем реальные эмоции с тренировок. Юмор уместен, но не в ущерб профессионализму."
-    },
-    {
-        "id": "visual",
-        "title": "Визуальный стиль",
-        "icon": "🎨",
-        "content": "Яркие цвета (оранжевый, синий, белый), динамичные фото с тренировок, минимум текста на изображениях. Акцент на эмоциях — радость победы, концентрация во время игры, командный дух. Шрифты современные, без засечек. Логотип — стилизованный мяч с крыльями."
-    },
-    {
-        "id": "competitors",
-        "title": "Анализ конкурентов",
-        "icon": "🏆",
-        "content": "Клуб «А» — известный бренд, но дорого и нет детских групп. Школа «Б» — дешевле, но старые корты и нет турниров. Наше преимущество — баланс цены и качества, фокус на детях, современная инфраструктура."
-    },
-    {
-        "id": "channels",
-        "title": "Каналы коммуникации",
-        "icon": "📱",
-        "content": "Instagram — основной канал (визуальный контент, stories с тренировок). VK — дополнительная аудитория (родители 35+). Telegram — быстрые новости и анонсы турниров. YouTube — длинные видео с советами тренеров и разборами техники."
-    }
-]
+PROFILE_HINTS = [("client_name", "клиент"), ("niche", "ниша"),
+                 ("audience", "аудитория"), ("tone_of_voice", "tone"),
+                 ("languages", "языки")]
 
-DEMO_KPIS = [
-    {"metric": "Подписчики Instagram", "current": "3200", "target": "5000", "deadline": "31.12.2026"},
-    {"metric": "Охват постов (средний)", "current": "7500", "target": "10000", "deadline": "31.12.2026"},
-    {"metric": "Записи на пробное занятие", "current": "35/мес", "target": "50/мес", "deadline": "31.12.2026"},
-    {"metric": "Вовлечённость (ER)", "current": "4.2%", "target": "6.0%", "deadline": "31.12.2026"},
-    {"metric": "Публикаций в неделю", "current": "3", "target": "5", "deadline": "01.12.2026"},
-]
+AI_ACTIONS = [("Переписать", "rewrite"), ("Углубить", "deepen"),
+              ("Альтернатива", "alternative")]
 
-DEMO_VERSIONS = []
+
+class _CoreWorker(QThread):
+    """Runs a blocking AI call off the GUI thread."""
+
+    done = Signal(str, bool)
+
+    def __init__(self, fn, parent=None):
+        super().__init__(parent)
+        self.fn = fn
+
+    def run(self):
+        try:
+            text = self.fn()
+            self.done.emit(text or "Готово", True)
+        except Exception as exc:
+            logger.exception("strategy ai action failed")
+            self.done.emit(f"Ошибка: {exc}", False)
+
+
+class SectionCard(QFrame):
+    """One strategy block: reads, edits inline, asks AI."""
+
+    save_requested = Signal(str, str)   # section_id, text
+    ai_requested = Signal(str, str)     # section_id, mode
+
+    def __init__(self, section: Dict[str, Any], parent=None):
+        super().__init__(parent)
+        self.setObjectName("zone")
+        self.section = section
+        self.section_id = str(section.get("id") or "")
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(10)
+
+        header = QHBoxLayout()
+        icon = QLabel(str(self.section.get("icon") or "•"))
+        icon.setStyleSheet("font-size: 14px;")
+        header.addWidget(icon)
+        title = QLabel(str(self.section.get("title") or self.section_id))
+        title.setStyleSheet(f"color: {TEXT}; font-size: 14px; font-weight: 700;")
+        header.addWidget(title)
+        header.addStretch()
+        for text, mode in AI_ACTIONS:
+            btn = QPushButton(f"🤖 {text}")
+            btn.setObjectName("topBtn")
+            btn.setStyleSheet("font-size: 10px; padding: 3px 8px;")
+            btn.clicked.connect(lambda checked=False, m=mode: self.ai_requested.emit(self.section_id, m))
+            header.addWidget(btn)
+        layout.addLayout(header)
+
+        self.content_label = QLabel(str(self.section.get("content") or "Блок пуст — нажмите «Редактировать»."))
+        self.content_label.setWordWrap(True)
+        self.content_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.content_label.setStyleSheet(f"color: #c9d1d9; font-size: 12px;")
+        layout.addWidget(self.content_label)
+
+        self.editor = QTextEdit()
+        self.editor.setPlainText(str(self.section.get("content") or ""))
+        self.editor.setMinimumHeight(110)
+        self.editor.setStyleSheet(
+            f"background-color: #0a0e13; color: {TEXT}; border: 1px solid {TEAL};"
+            " border-radius: 6px; padding: 8px; font-size: 12px;")
+        self.editor.hide()
+        layout.addWidget(self.editor)
+
+        buttons = QHBoxLayout()
+        self.edit_btn = QPushButton("✏️ Редактировать")
+        self.edit_btn.setObjectName("topBtn")
+        self.edit_btn.setStyleSheet("font-size: 10px; padding: 3px 8px;")
+        self.edit_btn.clicked.connect(self._toggle_editor)
+        buttons.addWidget(self.edit_btn)
+
+        self.save_btn = QPushButton("Сохранить")
+        self.save_btn.setObjectName("topBtn")
+        self.save_btn.setStyleSheet("font-size: 10px; padding: 3px 8px;")
+        self.save_btn.clicked.connect(self._save)
+        self.save_btn.hide()
+        buttons.addWidget(self.save_btn)
+
+        self.cancel_btn = QPushButton("Отмена")
+        self.cancel_btn.setObjectName("topBtn")
+        self.cancel_btn.setStyleSheet("font-size: 10px; padding: 3px 8px;")
+        self.cancel_btn.clicked.connect(self._toggle_editor)
+        self.cancel_btn.hide()
+        buttons.addWidget(self.cancel_btn)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+
+    def _toggle_editor(self):
+        editing = self.editor.isHidden()
+        self.editor.setVisible(editing)
+        self.content_label.setVisible(not editing)
+        self.save_btn.setVisible(editing)
+        self.cancel_btn.setVisible(editing)
+        self.edit_btn.setText("✏️ Редактировать" if not editing else "✏️ Скрыть")
+        if not editing:
+            self.editor.setPlainText(str(self.section.get("content") or ""))
+
+    def _save(self):
+        text = self.editor.toPlainText().strip()
+        self.save_requested.emit(self.section_id, text)
 
 
 class StrategyDocument(QWidget):
-    """Strategy displayed as readable document."""
-    action_requested = Signal(str, str)  # section_id, action
+    """List of editable blocks + empty state."""
 
-    def __init__(self, sections: List[Dict[str, Any]], parent=None):
+    save_requested = Signal(str, str)
+    ai_requested = Signal(str, str)
+
+    def __init__(self, sections: List[Dict[str, Any]], project_name: str = "", parent=None):
         super().__init__(parent)
         self.sections = sections
+        self.project_name = project_name
         self._build_ui()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setContentsMargins(24, 20, 24, 24)
+        layout.setSpacing(14)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("border: none; background-color: #0f1419;")
+        title = QLabel(f"Стратегия проекта «{self.project_name}»" if self.project_name
+                       else "Стратегия проекта")
+        title.setStyleSheet(f"color: {TEXT}; font-size: 22px; font-weight: 700;")
+        layout.addWidget(title)
 
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(32, 32, 32, 32)
-        content_layout.setSpacing(24)
+        if not self.sections:
+            placeholder = QLabel(
+                "Стратегии пока нет.\n\nСоберите её кнопкой «Создать с AI» или опишите проект "
+                "AI-менеджеру справа — блоки появятся здесь и будут редактируемыми.")
+            placeholder.setWordWrap(True)
+            placeholder.setStyleSheet(
+                f"color: {MUTED}; font-size: 13px; padding: 22px; background-color: #121820;"
+                " border: 1px dashed #2b3540; border-radius: 10px;")
+            layout.addWidget(placeholder)
+            layout.addStretch()
+            return
 
-        # Title
-        title = QLabel("Стратегия проекта «Теннис»")
-        title.setStyleSheet("color: #e6edf3; font-size: 28px; font-weight: bold; margin-bottom: 8px;")
-        content_layout.addWidget(title)
-
-        # subtitle = QLabel("Версия 1.1 · Обновлено 12.11.2026")  # REMOVED
-#         subtitle.setStyleSheet("color: #8b949e; font-size: 13px; margin-bottom: 32px;")  # REMOVED (subtitle ref)
-#         content_layout.addWidget(subtitle)  # REMOVED (subtitle ref)
-
-        # Sections
         for section in self.sections:
-            section_widget = self._create_section_widget(section)
-            content_layout.addWidget(section_widget)
-
-        content_layout.addStretch()
-
-        scroll.setWidget(content)
-        layout.addWidget(scroll, stretch=1)
-
-    def _create_section_widget(self, section: Dict[str, Any]) -> QFrame:
-        """Create a section with content and action buttons."""
-        frame = QFrame()
-        frame.setObjectName("zone")
-        frame.setStyleSheet("""
-            QFrame#zone {
-                background-color: #161b22;
-                border: 1px solid #30363d;
-                border-radius: 8px;
-                padding: 0;
-            }
-        """)
-
-        layout = QVBoxLayout(frame)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(12)
-
-        # Header with icon and title
-        header = QHBoxLayout()
-        icon_label = QLabel(section["icon"])
-        icon_label.setStyleSheet("font-size: 20px;")
-        header.addWidget(icon_label)
-
-        title_label = QLabel(section["title"])
-        title_label.setStyleSheet("color: #e6edf3; font-size: 18px; font-weight: bold;")
-        header.addWidget(title_label)
-
-        header.addStretch()
-        layout.addLayout(header)
-
-        # Content text
-        content_label = QLabel(section["content"])
-        content_label.setWordWrap(True)
-        content_label.setStyleSheet("""
-            color: #c9d1d9;
-            font-size: 14px;
-            line-height: 1.6;
-            padding: 12px 0;
-        """)
-        layout.addWidget(content_label)
-
-        # Action buttons
-        actions = QHBoxLayout()
-        actions.setSpacing(8)
-
-        actions_data = [
-            ("✏️ Редактировать", "edit"),
-            ("🤖 Переформулировать", "rewrite"),
-            ("💡 Альтернатива", "alternative"),
-            ("🔍 Углубить", "deepen"),
-        ]
-
-        for text, action_id in actions_data:
-            btn = QPushButton(text)
-            btn.setObjectName("topBtn")
-            btn.setStyleSheet("font-size: 11px; padding: 6px 12px;")
-            btn.clicked.connect(lambda checked, sid=section["id"], aid=action_id: self.action_requested.emit(sid, aid))
-            actions.addWidget(btn)
-
-        actions.addStretch()
-        layout.addLayout(actions)
-
-        return frame
+            card = SectionCard(section)
+            card.save_requested.connect(self.save_requested.emit)
+            card.ai_requested.connect(self.ai_requested.emit)
+            layout.addWidget(card)
+        layout.addStretch()
 
 
-class StrategyTable(QWidget):
-    """Strategy displayed as KPI table."""
+class KpiEditor(QWidget):
+    """Editable KPI table; saves into strategy.kpis."""
+
+    save_requested = Signal(list)
+
     def __init__(self, kpis: List[Dict[str, Any]], parent=None):
         super().__init__(parent)
-        self.kpis = kpis
+        self.rows = [dict(k) for k in kpis]
         self._build_ui()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
+        layout.setContentsMargins(24, 20, 24, 24)
+        layout.setSpacing(12)
 
-        title = QLabel("📊 KPI и метрики стратегии")
-        title.setStyleSheet("color: #e6edf3; font-size: 20px; font-weight: bold;")
+        title = QLabel("KPI и метрики")
+        title.setStyleSheet(f"color: {TEXT}; font-size: 22px; font-weight: 700;")
         layout.addWidget(title)
 
-        table = QTableWidget()
-        table.setObjectName("calendar")
-        table.setColumnCount(4)
-        table.setHorizontalHeaderLabels(["Метрика", "Сейчас", "Цель", "Дедлайн"])
-        table.setRowCount(len(self.kpis))
-        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        table.setSelectionMode(QAbstractItemView.SingleSelection)
-        table.verticalHeader().setVisible(False)
+        self.table = QTableWidget(len(self.rows), 4)
+        self.table.setObjectName("calendar")
+        self.table.setHorizontalHeaderLabels(["Метрика", "Сейчас", "Цель", "Дедлайн"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
-        for row, kpi in enumerate(self.kpis):
-            for col, key in enumerate(["metric", "current", "target", "deadline"]):
-                item = QTableWidgetItem(kpi.get(key, ""))
-                item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-                table.setItem(row, col, item)
+        for index, kpi in enumerate(self.rows):
+            for col, key in enumerate(("metric", "current", "target", "deadline")):
+                self.table.setItem(index, col, QTableWidgetItem(str(kpi.get(key) or "")))
+        layout.addWidget(self.table, stretch=1)
 
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        table.setMinimumHeight(300)
-        layout.addWidget(table)
+        buttons = QHBoxLayout()
+        add_btn = QPushButton("＋ Строка")
+        add_btn.setObjectName("topBtn")
+        add_btn.clicked.connect(self._add_row)
+        buttons.addWidget(add_btn)
 
-        # Progress summary
-        summary = QFrame()
-        summary.setStyleSheet("background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 16px;")
-        summary_layout = QVBoxLayout(summary)
+        save_btn = QPushButton("Сохранить KPI")
+        save_btn.setObjectName("topBtn")
+        save_btn.setProperty("class", "primary")
+        save_btn.clicked.connect(self._collect_and_save)
+        buttons.addWidget(save_btn)
+        buttons.addStretch()
+        layout.addLayout(buttons)
 
-        summary_title = QLabel("Прогресс выполнения")
-        summary_title.setStyleSheet("color: #e6edf3; font-size: 14px; font-weight: bold;")
-        summary_layout.addWidget(summary_title)
+    def _add_row(self):
+        self.table.insertRow(self.table.rowCount())
 
-        for kpi in self.kpis:
-            try:
-                current = float(kpi["current"].replace("/мес", "").replace("%", ""))
-                target = float(kpi["target"].replace("/мес", "").replace("%", ""))
-                progress = min(100, int((current / target) * 100))
-            except:
-                progress = 0
+    def _collect_and_save(self):
+        kpis = []
+        for row in range(self.table.rowCount()):
+            values = [self.table.item(row, col).text().strip() if self.table.item(row, col) else ""
+                      for col in range(4)]
+            if not any(values):
+                continue
+            kpis.append({"metric": values[0], "current": values[1],
+                         "target": values[2], "deadline": values[3]})
+        self.save_requested.emit(kpis)
 
-            row = QHBoxLayout()
-            label = QLabel(kpi["metric"])
-            label.setStyleSheet("color: #c9d1d9; font-size: 12px; min-width: 200px;")
-            row.addWidget(label)
-
-            bar = QFrame()
-            bar.setFixedHeight(8)
-            bar.setStyleSheet(f"background-color: #21262d; border-radius: 4px;")
-            bar_layout = QHBoxLayout(bar)
-            bar_layout.setContentsMargins(0, 0, 0, 0)
-            fill = QFrame()
-            fill.setFixedHeight(8)
-            color = "#238636" if progress >= 70 else "#9e6a03" if progress >= 40 else "#da3633"
-            fill.setStyleSheet(f"background-color: {color}; border-radius: 4px; min-width: {progress}px; max-width: {progress}px;")
-            bar_layout.addWidget(fill)
-            bar_layout.addStretch()
-            row.addWidget(bar, stretch=1)
-
-            percent = QLabel(f"{progress}%")
-            percent.setStyleSheet(f"color: {color}; font-size: 12px; font-weight: bold; min-width: 40px;")
-            row.addWidget(percent)
-
-            summary_layout.addLayout(row)
-
-        layout.addWidget(summary)
-        layout.addStretch()
-
-
-class StrategyMap(QWidget):
-    """Strategy displayed as visual map (placeholder)."""
-    def __init__(self, sections: List[Dict[str, Any]], parent=None):
-        super().__init__(parent)
-        self.sections = sections
-        self._build_ui()
-
-    def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
-
-        title = QLabel("🗺️ Карта стратегии")
-        title.setStyleSheet("color: #e6edf3; font-size: 20px; font-weight: bold;")
-        layout.addWidget(title)
-# subtitle removed
-#         subtitle.setStyleSheet("color: #8b949e; font-size: 13px;")  # REMOVED (subtitle ref)
-#         layout.addWidget(subtitle)  # REMOVED (subtitle ref)
-
-        # Placeholder map
-        map_frame = QFrame()
-        map_frame.setStyleSheet("background-color: #161b22; border: 2px dashed #30363d; border-radius: 8px; min-height: 400px;")
-        map_layout = QVBoxLayout(map_frame)
-        map_layout.setAlignment(Qt.AlignCenter)
-
-        placeholder = QLabel("🗺️")
-        placeholder.setStyleSheet("font-size: 80px; color: #8b949e;")
-        placeholder.setAlignment(Qt.AlignCenter)
-        map_layout.addWidget(placeholder)
-
-        text = QLabel("Визуальная карта связей\n(в разработке)")
-        text.setStyleSheet("color: #8b949e; font-size: 14px;")
-        text.setAlignment(Qt.AlignCenter)
-        map_layout.addWidget(text)
-
-        layout.addWidget(map_frame, stretch=1)
-        layout.addStretch()
-
-
-# class VersionHistory(QWidget):
-    pass  # Removed
 
 class StrategySection(QWidget):
-    """Strategy section: living document with multiple views."""
+    """Стратегия как рабочий раздел: правка блоков, AI, связь с профилем."""
 
-    def __init__(self, app_state: Dict[str, Any], parent=None):
+    navigate = Signal(str)
+    data_changed = Signal()
+
+    def __init__(self, data_manager, settings=None, parent=None):
         super().__init__(parent)
-        self.state = app_state
-        self.current_mode = "document"
+        self.dm = data_manager
+        self.settings = settings
+        self.mode = "document"
+        self._core = None
+        self._worker = None
         self._build_ui()
+        self._reload()
 
+    # --- data / core ---
+    def _get_core(self):
+        if self._core is None and self.dm is not None:
+            from ai_core import AICore
+            self._core = AICore(self.dm, self.settings)
+        return self._core
+
+    def _strategy(self) -> Dict[str, Any]:
+        return (self.dm.get_strategy() if self.dm else {}) or {}
+
+    # --- ui ---
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Header with mode switcher
         header = QFrame()
         header.setObjectName("zoneHeader")
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(16, 12, 16, 12)
+        head = QHBoxLayout(header)
+        head.setContentsMargins(16, 12, 16, 12)
 
-        title = QLabel("🎯 Стратегия проекта")
-        title.setStyleSheet("color: #e6edf3; font-size: 18px; font-weight: bold;")
-        header_layout.addWidget(title)
+        title = QLabel("🎯 Стратегия")
+        title.setStyleSheet(f"color: {TEXT}; font-size: 16px; font-weight: 700;")
+        head.addWidget(title)
 
-        header_layout.addStretch()
+        self.version_label = QLabel("")
+        self.version_label.setStyleSheet(f"color: {MUTED}; font-size: 11px; padding-left: 10px;")
+        head.addWidget(self.version_label)
+        head.addStretch()
 
-        # Mode buttons
-        self.mode_buttons = {}
-        modes = [("📄 Документ", "document"), ("📊 Таблица", "table"), ("🗺️ Карта", "map")]
-        for text, mode_id in modes:
+        for text, mode in (("📄 Документ", "document"), ("📊 KPI", "kpi")):
             btn = QPushButton(text)
             btn.setObjectName("topBtn")
-            if mode_id == self.current_mode:
-                btn.setProperty("class", "primary")
-            btn.setStyleSheet("font-size: 12px; padding: 6px 12px;")
-            btn.clicked.connect(lambda checked, m=mode_id: self._switch_mode(m))
-            self.mode_buttons[mode_id] = btn
-            header_layout.addWidget(btn)
+            btn.setStyleSheet("font-size: 11px; padding: 5px 10px;")
+            btn.clicked.connect(lambda checked=False, m=mode: self._switch_mode(m))
+            head.addWidget(btn)
 
-        # AI button
-        ai_btn = QPushButton("🤖 Создать с AI")
-        ai_btn.setObjectName("topBtn")
-        ai_btn.setProperty("class", "primary")
-        ai_btn.setStyleSheet("font-size: 13px; font-weight: bold; padding: 8px 16px; margin-left: 16px;")
-        ai_btn.clicked.connect(self._on_ai_create)
-        header_layout.addWidget(ai_btn)
-
+        self.ai_btn = QPushButton("🤖 Создать с AI")
+        self.ai_btn.setObjectName("topBtn")
+        self.ai_btn.setProperty("class", "primary")
+        self.ai_btn.setStyleSheet("font-size: 11px; padding: 6px 12px; margin-left: 10px;")
+        self.ai_btn.clicked.connect(self._on_create_ai)
+        head.addWidget(self.ai_btn)
         layout.addWidget(header)
 
-        # Main splitter: content | version history
-        splitter = QSplitter(Qt.Horizontal)
+        self.profile_strip = QFrame()
+        strip_layout = QHBoxLayout(self.profile_strip)
+        strip_layout.setContentsMargins(24, 8, 24, 8)
+        self.profile_label = QLabel("")
+        self.profile_label.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        strip_layout.addWidget(self.profile_label, stretch=1)
+        profile_btn = QPushButton("Открыть профиль")
+        profile_btn.setObjectName("topBtn")
+        profile_btn.setStyleSheet("font-size: 10px; padding: 3px 8px;")
+        profile_btn.clicked.connect(lambda: self.navigate.emit("brand_profile"))
+        strip_layout.addWidget(profile_btn)
+        layout.addWidget(self.profile_strip)
 
-        # Content area
-        self.content_area = QWidget()
-        self.content_layout = QVBoxLayout(self.content_area)
+        self.status = QLabel("")
+        self.status.setStyleSheet(f"color: {TEAL}; font-size: 11px; padding: 0 24px;")
+        layout.addWidget(self.status)
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.content = QWidget()
+        self.content_layout = QVBoxLayout(self.content)
         self.content_layout.setContentsMargins(0, 0, 0, 0)
-        self.content_layout.setSpacing(0)
+        self.scroll.setWidget(self.content)
+        layout.addWidget(self.scroll, stretch=1)
 
-        self._load_content()
-
-        splitter.addWidget(self.content_area)
-
-        # Version history
-        pass  # Version panel removed
-
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 1)
-        splitter.setHandleWidth(6)
-        splitter.setSizes([1000, 280])
-        splitter.setStyleSheet("""
-            QSplitter::handle { background-color: #30363d; border-radius: 2px; }
-            QSplitter::handle:hover { background-color: #58a6ff; }
-        """)
-
-        layout.addWidget(splitter, stretch=1)
-
-    def _load_content(self):
-        """Load content based on current mode."""
+    def _clear_content(self):
         while self.content_layout.count():
             item = self.content_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget:
+                widget.setParent(None)
+                widget.deleteLater()
 
-        if self.current_mode == "document":
-            widget = StrategyDocument(DEMO_STRATEGY_SECTIONS)
-            widget.action_requested.connect(self._on_action_requested)
-        elif self.current_mode == "table":
-            widget = StrategyTable(DEMO_KPIS)
-        elif self.current_mode == "map":
-            widget = StrategyMap(DEMO_STRATEGY_SECTIONS)
+    def _reload(self):
+        strategy = self._strategy()
+        version = strategy.get("version") or "—"
+        updated = strategy.get("updated") or "—"
+        self.version_label.setText(f"версия {version} · обновлено {updated}")
+        self._update_profile_strip()
+        self._clear_content()
 
-        self.content_layout.addWidget(widget, stretch=1)
+        if self.mode == "kpi":
+            editor = KpiEditor(strategy.get("kpis") or [])
+            editor.save_requested.connect(self._save_kpis)
+            self.content_layout.addWidget(editor)
+            return
+
+        document = StrategyDocument(strategy.get("sections") or [],
+                                    strategy.get("project_name") or "")
+        document.save_requested.connect(self._save_section)
+        document.ai_requested.connect(self._run_ai_action)
+        self.content_layout.addWidget(document)
+
+    def _update_profile_strip(self):
+        profile = (self.dm.get_brand_profile() if self.dm else {}) or {}
+        parts = [f"{label}: {profile.get(key)}" for key, label in PROFILE_HINTS
+                 if str(profile.get(key) or "").strip()]
+        if parts:
+            self.profile_label.setText("Бренд-профиль · " + " · ".join(parts))
+            self.profile_label.setStyleSheet(f"color: {TEAL}; font-size: 11px;")
+        else:
+            self.profile_label.setText(
+                "Бренд-профиль не заполнен — AI будет спрашивать контекст в каждом запросе")
+            self.profile_label.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
 
     def _switch_mode(self, mode: str):
-        """Switch view mode."""
-        self.current_mode = mode
-        for m, btn in self.mode_buttons.items():
-            if m == mode:
-                btn.setProperty("class", "primary")
-            else:
-                btn.setProperty("class", "")
-            btn.style().unpolish(btn)
-            btn.style().polish(btn)
-        self._load_content()
+        self.mode = mode
+        self._reload()
 
-    def _on_action_requested(self, section_id: str, action: str):
-        """Handle action button click in document mode."""
-        action_messages = {
-            "edit": f"Открыть редактор раздела '{section_id}'",
-            "rewrite": f"AI переформулирует раздел '{section_id}'",
-            "alternative": f"AI предложит альтернативу для раздела '{section_id}'",
-            "deepen": f"AI углубит раздел '{section_id}'",
-        }
-        msg = action_messages.get(action, f"Действие: {action}")
-        QMessageBox.information(self, "Действие", f"{msg}\n\nВ полной версии это действие выполнит AI-менеджер.")
+    # --- actions ---
+    def _save_section(self, section_id: str, text: str):
+        core = self._get_core()
+        if core is not None:
+            reply = core.run_tool("update_strategy_section",
+                                  section_id=section_id, content=text)
+        else:
+            self.dm.update_strategy_section(section_id, text)
+            reply = None
+        self.status.setText(reply.text.splitlines()[0] if reply else "Блок сохранён")
+        self._reload()
+        self.data_changed.emit()
 
-    def _on_ai_create(self):
-        """AI strategy creation."""
-        QMessageBox.information(
-            self,
-            "AI-создание стратегии",
-            "В полной версии здесь начнётся диалог с AI-менеджером.\n\n"
-            "AI задаст вопросы о проекте и сформирует живую стратегию."
-        )
+    def _save_kpis(self, kpis: List[Dict[str, Any]]):
+        core = self._get_core()
+        if core is not None:
+            reply = core.run_tool("update_kpis", kpis=kpis)
+        else:
+            strategy = self.dm.get_strategy() if self.dm else None
+            if strategy is None:
+                return
+            strategy["kpis"] = kpis
+            self.dm.save()
+            reply = None
+        self.status.setText(reply.text.splitlines()[0] if reply else "KPI сохранены")
+        self.status.setStyleSheet(f"color: {TEAL}; font-size: 11px; padding: 0 24px;")
+        self._reload()
+        self.data_changed.emit()
 
-    def _on_version_selected(self, version: str):
-        """Handle version selection."""
-        QMessageBox.information(self, "Версия", f"Выбрана версия {version}\n\nВ реальной версии стратегия загрузится из этой версии.")
+    def _run_ai_action(self, section_id: str, mode: str):
+        core = self._get_core()
+        if core is None:
+            self.status.setText("AI недоступен: нет проекта")
+            return
+        self.status.setText("Модель думает…")
+        self._set_busy(True)
+        self._worker = _CoreWorker(lambda: core.rewrite_section(section_id, mode).text, self)
+        self._worker.done.connect(self._on_ai_done)
+        self._worker.start()
+
+    def _on_create_ai(self):
+        strategy = self._strategy()
+        if strategy.get("sections"):
+            answer = QMessageBox.question(
+                self, "Перезаписать стратегию?",
+                "Стратегия уже заполнена. Новый вариант заменит все блоки "
+                "(откат доступен в журнале AI). Продолжить?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
+        brief, ok = QInputDialog.getMultiLineText(
+            self, "Создать стратегию", "Кратко о клиенте, продукте и цели:")
+        if not ok or not brief.strip():
+            return
+        core = self._get_core()
+        if core is None:
+            return
+        self.status.setText("Собираю стратегию…")
+        self._set_busy(True)
+        self._worker = _CoreWorker(lambda: self._create_strategy_blocking(core, brief), self)
+        self._worker.done.connect(self._on_ai_done)
+        self._worker.start()
+
+    @staticmethod
+    def _create_strategy_blocking(core, brief: str) -> str:
+        reply = core.handle(f"сделай стратегию: {brief}")
+        if reply.needs_confirmation:
+            reply = core.handle("да")
+        return reply.text
+
+    def _on_ai_done(self, text: str, ok: bool):
+        self._set_busy(False)
+        self.status.setText(text.splitlines()[0] if text else "")
+        self.status.setStyleSheet(
+            f"color: {TEAL if ok else '#f87171'}; font-size: 11px; padding: 0 24px;")
+        self._reload()
+        self.data_changed.emit()
+
+    def _set_busy(self, busy: bool):
+        self.ai_btn.setEnabled(not busy)
+        self.ai_btn.setText("⏳ Работаю…" if busy else "🤖 Создать с AI")

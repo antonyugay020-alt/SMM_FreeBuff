@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
+from storage import ProjectStore
+
 logger = logging.getLogger(__name__)
 
 
@@ -18,6 +20,7 @@ class DataManager:
         self.project_id = project_id
         self.data_dir = Path(data_dir) if data_dir else Path(__file__).resolve().parent.parent / "data" / "projects" / project_id
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.store = ProjectStore(self.data_dir)
         
         # In-memory data (loaded from disk or initialized with demo data)
         self._data = {
@@ -33,190 +36,109 @@ class DataManager:
         }
         
         self._load_from_disk()
+        self._migrate_legacy_calendar()
         logger.info(f"DataManager initialized for project '{project_id}'")
 
-    # === Default demo data ===
+    def _migrate_legacy_calendar(self):
+        """Merge events saved under the old 'calendar' key into 'calendar_events'."""
+        legacy = self._data.pop("calendar", None)
+        if not legacy:
+            return
+        target = self._data.setdefault("calendar_events", [])
+        known = {e.get("id") for e in target if isinstance(e, dict)}
+        for event in legacy:
+            if not isinstance(event, dict):
+                continue
+            if not event.get("id") or event.get("id") in known:
+                # Overlapping IDs are common: keep the event with a fresh ID
+                counter = len(target) + 1
+                new_id = f"ev_legacy_{counter:03d}"
+                while new_id in known:
+                    counter += 1
+                    new_id = f"ev_legacy_{counter:03d}"
+                event["id"] = new_id
+            event.setdefault("time", "12:00")
+            event.setdefault("description", "")
+            event.setdefault("type", "publication")
+            event.setdefault("title", "Событие")
+            known.add(event["id"])
+            target.append(event)
+        self.save()
+
+    # === Default (empty) project template ===
     def _default_strategy(self) -> Dict[str, Any]:
         return {
-            "project_name": "Теннис",
-            "version": "1.1",
-            "updated": "12.11.2026",
-            "sections": [
-                {"id": "about", "title": "О проекте", "icon": "📋",
-                 "content": "Семейный теннисный клуб «Чемпион» работает с 2018 года. Основная специализация — обучение детей и взрослых теннису с нуля до соревновательного уровня. В клубе 4 корта (2 закрытых, 2 открытых), профессиональные тренеры с опытом работы в детских спортивных школах."},
-                {"id": "audience", "title": "Целевая аудитория", "icon": "👥",
-                 "content": "Основной сегмент — родители детей 6-14 лет, которые ищут секцию для развития ребёнка. Они ценят профессиональный подход, безопасность и возможность отслеживать прогресс. Вторичный сегмент — взрослые любители 30-45 лет, играющие для здоровья и удовольствия."},
-                {"id": "positioning", "title": "Позиционирование", "icon": "🎯",
-                 "content": "«Первый шаг к большому теннису» — клуб, где каждый ученик получает персональный план развития. Мы не просто учим бить по мячу, мы воспитываем характер через спорт."},
-                {"id": "utp", "title": "Уникальное торговое предложение", "icon": "💎",
-                 "content": "Первое занятие бесплатно + персональный план развития для каждого ученика. Родители получают ежемесячный отчёт о прогрессе ребёнка с видеоанализом техники."},
-                {"id": "tone", "title": "Tone of Voice", "icon": "🗣️",
-                 "content": "Дружелюбный, мотивирующий, экспертный но не занудный. Мы говорим на языке родителей и детей, избегаем спортивного жаргона."},
-                {"id": "visual", "title": "Визуальный стиль", "icon": "🎨",
-                 "content": "Яркие цвета (оранжевый, синий, белый), динамичные фото, минимум текста на изображениях. Акцент на эмоциях."},
-                {"id": "competitors", "title": "Анализ конкурентов", "icon": "🏆",
-                 "content": "Клуб «А» — известный бренд, но дорого и нет детских групп. Школа «Б» — дешевле, но старые корты. Наше преимущество — баланс цены и качества, фокус на детях."},
-                {"id": "channels", "title": "Каналы коммуникации", "icon": "📱",
-                 "content": "Instagram — основной канал. VK — дополнительная аудитория. Telegram — быстрые новости. YouTube — длинные видео с советами тренеров."},
-            ],
-            "kpis": [
-                {"metric": "Подписчики Instagram", "current": "3200", "target": "5000", "deadline": "31.12.2026"},
-                {"metric": "Охват постов", "current": "7500", "target": "10000", "deadline": "31.12.2026"},
-                {"metric": "Записи на пробное", "current": "35/мес", "target": "50/мес", "deadline": "31.12.2026"},
-            ],
-            "versions": [
-                {"version": "1.0", "date": "10.11.2026", "author": "AI + Антон", "changes": "Первичная версия"},
-                {"version": "1.1", "date": "12.11.2026", "author": "Антон", "changes": "Добавлен сегмент 'молодые мамы'"},
-            ],
+            "project_name": "",
+            "version": "",
+            "updated": "",
+            "sections": [],
+            "kpis": [],
+            "versions": [],
         }
 
     def _default_content_plan(self) -> List[Dict[str, Any]]:
-        return [
-            {"id": "cp_001", "date": "15.11.2026", "rubric": "Польза", "topic": "5 упражнений для укрепления запястья", "format": "Пост", "status": "Одобрено", "responsible": "Антон", "strategy_link": "utp", "shooting_task_id": "st_001"},
-            {"id": "cp_002", "date": "16.11.2026", "rubric": "Развлечение", "topic": "Смешные моменты с тренировок", "format": "Reels", "status": "В работе", "responsible": "Марина", "strategy_link": "tone", "shooting_task_id": None},
-            {"id": "cp_003", "date": "17.11.2026", "rubric": "Продажа", "topic": "Акция: первое занятие бесплатно", "format": "Stories", "status": "Запланировано", "responsible": "Антон", "strategy_link": "utp", "shooting_task_id": None},
-            {"id": "cp_004", "date": "18.11.2026", "rubric": "Личное", "topic": "История успеха ученика Максима", "format": "Пост", "status": "Черновик", "responsible": "Марина", "strategy_link": "about", "shooting_task_id": None},
-            {"id": "cp_005", "date": "19.11.2026", "rubric": "Польза", "topic": "Как выбрать ракетку новичку", "format": "Reels", "status": "Запланировано", "responsible": "Антон", "strategy_link": "audience", "shooting_task_id": None},
-            {"id": "cp_006", "date": "20.11.2026", "rubric": "Развлечение", "topic": "Закулисье турнира", "format": "Stories", "status": "В работе", "responsible": "Марина", "strategy_link": "visual", "shooting_task_id": "st_002"},
-            {"id": "cp_007", "date": "21.11.2026", "rubric": "Продажа", "topic": "Открытие новой группы для детей 6-8 лет", "format": "Пост", "status": "Черновик", "responsible": "Антон", "strategy_link": "audience", "shooting_task_id": "st_003"},
-        ]
+        return []
 
     def _default_calendar_events(self) -> List[Dict[str, Any]]:
-        return [
-            {"id": "ev_001", "date": "15.11.2026", "time": "10:00", "type": "publication", "title": "Пост: 5 упражнений для запястья", "description": "Публикация в Instagram", "link": "cp_001"},
-            {"id": "ev_002", "date": "15.11.2026", "time": "14:00", "type": "shooting", "title": "Съёмка тренировки группы 6-8 лет", "description": "Фото и видео для Stories", "link": "st_001"},
-            {"id": "ev_003", "date": "16.11.2026", "time": "12:00", "type": "meeting", "title": "Встреча с тренером Мариной", "description": "Обсуждение плана на декабрь", "link": None},
-            {"id": "ev_004", "date": "17.11.2026", "time": "09:00", "type": "publication", "title": "Stories: Акция первое занятие бесплатно", "description": "Серия из 3 stories", "link": "cp_003"},
-            {"id": "ev_005", "date": "18.11.2026", "time": "16:00", "type": "brand_event", "title": "Турнир среди юниоров", "description": "Ежемесячный турнир клуба", "link": None},
-            {"id": "ev_006", "date": "19.11.2026", "time": "11:00", "type": "publication", "title": "Reels: Как выбрать ракетку новичку", "description": "Видео-совет от тренера", "link": "cp_005"},
-            {"id": "ev_007", "date": "20.11.2026", "time": "15:00", "type": "shooting", "title": "Съёмка закулисья турнира", "description": "Фотоотчёт для ленты", "link": "st_002"},
-            {"id": "ev_008", "date": "21.11.2026", "time": "10:00", "type": "publication", "title": "Пост: Открытие новой группы 6-8 лет", "description": "Анонс новой группы", "link": "cp_007"},
-            {"id": "ev_009", "date": "22.11.2026", "time": "12:00", "type": "meeting", "title": "Планёрка команды", "description": "Еженедельная встреча", "link": None},
-            {"id": "ev_010", "date": "25.11.2026", "time": "18:00", "type": "brand_event", "title": "День открытых дверей", "description": "Бесплатные пробные занятия", "link": None},
-        ]
+        return []
 
     def _default_shooting_tasks(self) -> List[Dict[str, Any]]:
-        return [
-            {
-                "id": "st_001", "date": "15.11.2026", "time": "14:00", "location": "Корт №2 (закрытый)",
-                "type": "Фото + Видео", "content_plan_link": "cp_001", "status": "Снято",
-                "team": "Фотограф: Марина, Модель: Максим (ученик)", "priority": "Высокий",
-                "budget": "5000 ₽", "duration": "2 часа",
-                "shots": [
-                    {"num": 1, "desc": "Крупный план: упражнение с эспандером", "ref": "ref_wrist_01.jpg", "priority": "Высокий", "status": "Снято"},
-                    {"num": 2, "desc": "Средний план: тренер показывает технику", "ref": "ref_coach_02.jpg", "priority": "Высокий", "status": "Снято"},
-                    {"num": 3, "desc": "Общий план: ребёнок выполняет упражнение", "ref": None, "priority": "Средний", "status": "Снято"},
-                    {"num": 4, "desc": "Детали: руки, ракетка, мяч", "ref": "ref_details_03.jpg", "priority": "Низкий", "status": "Снято"},
-                ],
-                "tech_req": "Формат: JPEG + RAW, Ориентация: вертикальная 4:5, Разрешение: 4000x5000",
-                "notes": "Свет естественный + софтбокс. Акцент на эмоциях ребёнка.",
-            },
-            {
-                "id": "st_002", "date": "20.11.2026", "time": "15:00", "location": "Турнирный корт",
-                "type": "Видео", "content_plan_link": "cp_006", "status": "Согласовано",
-                "team": "Оператор: Антон, Ассистент: Ирина", "priority": "Средний",
-                "budget": "3000 ₽", "duration": "3 часа",
-                "shots": [
-                    {"num": 1, "desc": "Подготовка участников (разминка)", "ref": None, "priority": "Высокий", "status": "Нужен"},
-                    {"num": 2, "desc": "Эмоции во время матча", "ref": "ref_emotions_01.jpg", "priority": "Высокий", "status": "Нужен"},
-                    {"num": 3, "desc": "Награждение победителей", "ref": None, "priority": "Средний", "status": "Нужен"},
-                    {"num": 4, "desc": "Интервью с участниками", "ref": None, "priority": "Низкий", "status": "Нужен"},
-                ],
-                "tech_req": "Формат: MP4 (H.264), Разрешение: 1080x1920 (вертикальное), FPS: 30",
-                "notes": "Снимать на стабилизатор. Звук через петличку.",
-            },
-            {
-                "id": "st_003", "date": "25.11.2026", "time": "10:00", "location": "Главный корт + раздевалка",
-                "type": "Фото", "content_plan_link": "cp_007", "status": "Черновик",
-                "team": "Фотограф: Марина", "priority": "Высокий",
-                "budget": "4000 ₽", "duration": "2 часа",
-                "shots": [
-                    {"num": 1, "desc": "Групповое фото детей с тренером", "ref": None, "priority": "Высокий", "status": "Нужен"},
-                    {"num": 2, "desc": "Дети играют в теннис (динамика)", "ref": "ref_kids_play_01.jpg", "priority": "Высокий", "status": "Нужен"},
-                    {"num": 3, "desc": "Детали: детская ракетка, мячи, форма", "ref": None, "priority": "Средний", "status": "Нужен"},
-                    {"num": 4, "desc": "Интерьер: корт, раздевалка, зона ожидания", "ref": None, "priority": "Низкий", "status": "Нужен"},
-                ],
-                "tech_req": "Формат: JPEG + RAW, Ориентация: горизонтальная 16:9 и квадрат 1:1",
-                "notes": "Яркие цвета, акцент на радости детей. Минимум постановки.",
-            },
-        ]
+        return []
 
     def _default_media_sources(self) -> List[Dict[str, Any]]:
-        return [
-            {"id": "src_001", "name": "raw_001.jpg", "type": "image", "size": "4032x3024", "date": "15.11.2026", "shooting_task": "st_001"},
-            {"id": "src_002", "name": "raw_002.jpg", "type": "image", "size": "4032x3024", "date": "15.11.2026", "shooting_task": "st_001"},
-            {"id": "src_003", "name": "raw_003.mp4", "type": "video", "size": "1920x1080", "date": "14.10.2026", "shooting_task": None},
-            {"id": "src_004", "name": "raw_004.jpg", "type": "image", "size": "3024x4032", "date": "14.10.2026", "shooting_task": None},
-            {"id": "src_005", "name": "raw_005.jpg", "type": "image", "size": "4032x3024", "date": "13.10.2026", "shooting_task": None},
-            {"id": "src_006", "name": "raw_006.mp4", "type": "video", "size": "1080x1920", "date": "13.10.2026", "shooting_task": None},
-        ]
+        return []
 
     def _default_media_references(self) -> List[Dict[str, Any]]:
-        return [
-            {"id": "ref_001", "name": "ref_cafe_style.jpg", "type": "image", "category": "Лента", "size": "1080x1080"},
-            {"id": "ref_002", "name": "ref_reels_example.mp4", "type": "video", "category": "Reels", "size": "1080x1920"},
-            {"id": "ref_003", "name": "ref_stories_mood.jpg", "type": "image", "category": "Stories", "size": "1080x1920"},
-            {"id": "ref_004", "name": "ref_color_palette.jpg", "type": "image", "category": "Общий", "size": "1920x1080"},
-        ]
+        return []
 
     def _default_media_ready(self) -> List[Dict[str, Any]]:
-        return [
-            {"id": "ready_001", "name": "tennis_001.jpg", "status": "approved", "type": "image", "size": "1920x2560", "date": "15.11.2026"},
-            {"id": "ready_002", "name": "tennis_002.jpg", "status": "approved", "type": "image", "size": "1920x2560", "date": "15.11.2026"},
-            {"id": "ready_003", "name": "reels_001.mp4", "status": "approved", "type": "video", "size": "1080x1920", "date": "16.11.2026"},
-            {"id": "ready_004", "name": "coffee_story.jpg", "status": "pending", "type": "image", "size": "1080x1920", "date": "17.11.2026"},
-            {"id": "ready_005", "name": "room_001.jpg", "status": "rejected", "type": "image", "size": "1920x2560", "date": "17.11.2026"},
-        ]
+        return []
 
     def _default_publications(self) -> Dict[str, Any]:
         return {
             "folders": {
-                "stories": {"name": "Stories", "icon": "📷", "desc": "Фото и короткие видео (до 60 сек)", "color": "#9e6a03",
-                            "items": [{"name": "coffee_story.jpg", "time": "18:00", "date": "17.11.2026"}]},
-                "reels": {"name": "Reels", "icon": "🎬", "desc": "Вертикальные видео (до 90 сек)", "color": "#1f6feb",
-                          "items": [{"name": "reels_001.mp4", "time": "15:45", "date": "16.11.2026"}]},
-                "feed": {"name": "Лента", "icon": "📰", "desc": "Фото и видео (1:1, 4:5, 16:9)", "color": "#238636",
-                         "items": [{"name": "tennis_001.jpg", "time": "12:00", "date": "15.11.2026"},
-                                   {"name": "tennis_002.jpg", "time": "12:00", "date": "15.11.2026"}]},
+                "stories": {"name": "Stories", "icon": "📷",
+                            "desc": "Фото и короткие видео (до 60 сек)",
+                            "color": "#9e6a03", "items": []},
+                "reels": {"name": "Reels", "icon": "🎬",
+                          "desc": "Вертикальные видео (до 90 сек)",
+                          "color": "#1f6feb", "items": []},
+                "feed": {"name": "Лента", "icon": "📰",
+                         "desc": "Фото и видео (1:1, 4:5, 16:9)",
+                         "color": "#238636", "items": []},
             },
-            "schedule": {"timezone": "(UTC+6:00) Алматы", "period": "Ежедневно", "times": ["12:00", "18:00"]},
+            "schedule": {"timezone": "(UTC+6:00) Алматы", "period": "Ежедневно",
+                         "times": ["12:00", "18:00"]},
         }
 
     def _default_other_files(self) -> Dict[str, List[Dict[str, Any]]]:
-        return {
-            "archive": [
-                {"name": "campaign_summer_2025.zip", "type": "archive", "size": "245 MB", "date": "15.08.2025", "tags": ["архив", "лето2025"]},
-                {"name": "old_logo_variants.psd", "type": "image", "size": "12 MB", "date": "10.03.2025", "tags": ["логотип", "дизайн"]},
-            ],
-            "buffer": [
-                {"name": "random_photo_001.jpg", "type": "image", "size": "3.2 MB", "date": "10.11.2026", "tags": ["буфер"]},
-                {"name": "meeting_notes.docx", "type": "document", "size": "156 KB", "date": "08.11.2026", "tags": ["встреча", "заметки"]},
-            ],
-            "documents": [
-                {"name": "brand_guidelines_v2.pdf", "type": "document", "size": "8.5 MB", "date": "01.09.2026", "tags": ["бренд", "гайдлайн"]},
-                {"name": "contract_photographer.pdf", "type": "document", "size": "245 KB", "date": "15.10.2026", "tags": ["договор", "фотограф"]},
-                {"name": "brief_november.docx", "type": "document", "size": "89 KB", "date": "01.11.2026", "tags": ["бриф", "ноябрь"]},
-            ],
-            "references": [
-                {"name": "moodboard_tennis.jpg", "type": "image", "size": "5.1 MB", "date": "20.10.2026", "tags": ["мудборд", "теннис"]},
-                {"name": "color_palette.png", "type": "image", "size": "1.2 MB", "date": "20.10.2026", "tags": ["цвета", "палитра"]},
-                {"name": "font_examples.pdf", "type": "document", "size": "3.4 MB", "date": "20.10.2026", "tags": ["шрифты", "типографика"]},
-            ],
-            "templates": [
-                {"name": "instagram_post_template.psd", "type": "image", "size": "15 MB", "date": "01.10.2026", "tags": ["шаблон", "instagram"]},
-                {"name": "stories_template.psd", "type": "image", "size": "8 MB", "date": "01.10.2026", "tags": ["шаблон", "stories"]},
-            ],
-        }
+        return {"archive": [], "buffer": [], "documents": [], "references": [], "templates": []}
 
     # === Persistence ===
     def _load_from_disk(self):
+        """Load from SQLite. The first run imports legacy project_data.json once."""
         data_file = self.data_dir / "project_data.json"
+        try:
+            if self.store.migrate_if_needed(data_file):
+                logger.info(f"Migrated project '{self.project_id}' from JSON to SQLite")
+        except Exception as e:
+            logger.error(f"Migration failed, falling back to JSON: {e}")
+
+        try:
+            loaded = self.store.load()
+            if loaded:
+                self._data.update(loaded)
+                logger.info(f"Loaded project data from {self.store.path}")
+                return
+        except Exception as e:
+            logger.error(f"Failed to load project from SQLite: {e}")
+
         if data_file.exists():
             try:
                 with open(data_file, "r", encoding="utf-8") as f:
                     saved = json.load(f)
                 self._data.update(saved)
-                logger.info(f"Loaded project data from {data_file}")
+                logger.warning(f"Loaded project data from legacy JSON {data_file}")
             except Exception as e:
                 logger.warning(f"Failed to load project data: {e}")
 
@@ -245,7 +167,7 @@ class DataManager:
             new_id = f"cp_{counter:03d}"
         
         item["id"] = new_id
-        item.setdefault("status", "Planned")
+        item.setdefault("status", "Запланировано")
         item.setdefault("source", "Manual")
         
         self._data.setdefault("content_plan", []).append(item)
@@ -253,13 +175,9 @@ class DataManager:
         logger.info(f"Added content plan item: {new_id} ({item.get('topic', '')[:30]})")
         return new_id
 
-    def get_calendar_events(self):
-        """Return calendar events list."""
-        return self._data.setdefault("calendar", [])
-
     def add_calendar_event(self, event):
         """Add event to calendar section. Returns created id."""
-        events = self._data.setdefault("calendar", [])
+        events = self._data.setdefault("calendar_events", [])
         existing = [e.get("id") for e in events if isinstance(e, dict)]
         counter = len(events) + 1
         new_id = f"ev_{counter:03d}"
@@ -267,7 +185,7 @@ class DataManager:
             counter += 1
             new_id = f"ev_{counter:03d}"
         event["id"] = new_id
-        event.setdefault("status", "Planned")
+        event.setdefault("status", "Запланировано")
         event.setdefault("source", "Manual")
         events.append(event)
         self.save()
@@ -275,11 +193,10 @@ class DataManager:
         return new_id
 
     def save(self):
-        data_file = self.data_dir / "project_data.json"
+        """Write the whole project into SQLite in one transaction."""
         try:
-            with open(data_file, "w", encoding="utf-8") as f:
-                json.dump(self._data, f, ensure_ascii=False, indent=2)
-            logger.info(f"Saved project data to {data_file}")
+            self.store.save(self._data)
+            logger.info(f"Saved project data to {self.store.path}")
             return True
         except Exception as e:
             logger.error(f"Failed to save project data: {e}")
@@ -321,6 +238,21 @@ class DataManager:
 
     def get_publications(self) -> Dict[str, Any]:
         return self._data["publications"]
+
+    def get_brand_profile(self) -> Dict[str, Any]:
+        try:
+            return self.store.load_brand_profile() or {}
+        except Exception as e:
+            logger.error(f"Failed to load brand profile: {e}")
+            return {}
+
+    def save_brand_profile(self, profile: Dict[str, Any]) -> bool:
+        try:
+            self.store.save_brand_profile(profile)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save brand profile: {e}")
+            return False
 
     def get_other_files(self, folder: str = None) -> Any:
         if folder:
@@ -429,14 +361,24 @@ class DataManager:
                 return section
         return None
 
+    def update_strategy_section(self, section_id: str, content: str) -> bool:
+        """Write text into an existing strategy section. Returns True if found."""
+        section = self.get_strategy_section_by_id(section_id)
+        if section is None or not content:
+            return False
+        section["content"] = content.strip()
+        self._data["strategy"]["updated"] = datetime.now().strftime("%d.%m.%Y")
+        self.save()
+        return True
+
     def add_media_source(self, file_path: str) -> Dict[str, Any]:
         """Import a real file into media sources. Returns the new source record."""
         src = Path(file_path)
         if not src.exists():
             return None
         
-        # Copy to media/images/
-        media_dir = Path(__file__).resolve().parent / "media" / "images"
+        # Copy to the shared media/images/ folder used by the GUI sections
+        media_dir = Path(__file__).resolve().parent.parent / "media" / "images"
         media_dir.mkdir(parents=True, exist_ok=True)
         dest = media_dir / src.name
         
@@ -459,6 +401,7 @@ class DataManager:
             "name": dest.name,
             "type": ftype,
             "size": "unknown",
+            "path": str(dest),
             "date": Path(src).stat().st_mtime and __import__('datetime').datetime.fromtimestamp(
                 Path(src).stat().st_mtime
             ).strftime("%d.%m.%Y"),

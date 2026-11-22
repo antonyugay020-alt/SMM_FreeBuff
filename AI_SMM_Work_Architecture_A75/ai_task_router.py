@@ -3,7 +3,7 @@ import logging
 import re
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ class AITaskRouter:
         Examples:
         - "Создай рекламную кампанию для кофейни карамельный латте на 7 дней"
           → [strategy, content_plan, media_gen, text_gen, validation]
-        - "Обнови позиционирование проекта 'Теннис'"
+        - "Обнови позиционирование проекта 'Acme'"
           → [strategy_update]
         - "Сгенерируй 3 идеи контента на неделю"
           → [content_plan]
@@ -182,7 +182,7 @@ class AITaskRouter:
                 task_type="strategy",
                 description=f"Разработать стратегию продвижения для '{prod}' на {dur} дней",
                 target_section="strategy",
-                parameters={"product": prod, "duration_days": dur},
+                parameters={"product": prod, "duration_days": dur, "platforms": plats},
             ))
             
             # 2. Content plan depends on strategy
@@ -191,7 +191,7 @@ class AITaskRouter:
                 task_type="content_plan",
                 description=f"Составить контент-план на {dur} дней для платформ: {', '.join(plats)}",
                 target_section="content_plan",
-                parameters={"duration_days": dur, "platforms": plats},
+                parameters={"product": prod, "duration_days": dur, "platforms": plats},
                 dependencies=[f"{base_id}_1"],
             ))
             
@@ -201,7 +201,7 @@ class AITaskRouter:
                 task_type="media_generation",
                 description=f"Сгенерировать {qty} изображений/видео в разных стилях для публикаций",
                 target_section="media_content",
-                parameters={"quantity": qty, "styles": ["photorealistic", "minimalist", "premium"]},
+                parameters={"product": prod, "quantity": qty, "platforms": plats, "styles": ["photorealistic", "minimalist", "premium"]},
                 dependencies=[f"{base_id}_2"],
             ))
             
@@ -211,7 +211,7 @@ class AITaskRouter:
                 task_type="text_generation",
                 description=f"Подготовить тексты публикаций с хэштегами и призывами к действию",
                 target_section="publications",
-                parameters={"with_hashtags": True, "include_cta": True},
+                parameters={"product": prod, "platforms": plats, "with_hashtags": True, "include_cta": True},
                 dependencies=[f"{base_id}_2"],
             ))
             
@@ -281,14 +281,10 @@ class AITaskRouter:
         data_manager,
         ai_client=None
     ) -> Dict[str, Any]:
-        """Execute all sub-tasks in order, updating DataManager as results arrive.
-        
-        NOTE: This is a stub implementation. Real execution requires:
-        1. Connection to actual AI models (OpenAI/local LLM)
-        2. Image/video generation tools (Stable Diffusion, FFmpeg)
-        3. Quality validation logic
-        
-        For now, it demonstrates the routing structure.
+        """Execute all sub-tasks in order and write the results into DataManager.
+
+        Every handler below performs a real change in the project data
+        (strategy, content plan, calendar, shooting tasks, captions).
         """
         results = {}
         ordered_tasks = parsed.get_execution_order()
@@ -300,61 +296,17 @@ class AITaskRouter:
             task.status = "in_progress"
             
             try:
-                # SIMULATED EXECUTION - replace with real tool calls later
-                if task.task_type == "strategy":
-                    # Would call AI to generate/update strategy document
-                    fake_result = {
-                        "sections_updated": ["about", "audience", "positioning"],
-                        "version_incremented": True,
-                    }
-                
-                elif task.task_type == "content_plan":
-                    # Would generate N days worth of planned posts
-                    fake_result = {
-                        "items_added": len(parsed.project_context.get("existing_items", [])) + 7,
-                        "dates_covered": f"{task.parameters.get('duration_days', 7)} days",
-                    }
-                
-                elif task.task_type == "media_generation":
-                    # Would trigger image/video generation pipeline
-                    fake_result = {
-                        "files_generated": task.parameters.get("quantity", 1),
-                        "storage_path": "media/generated/",
-                    }
-                
-                elif task.task_type == "text_generation":
-                    # Would produce captions, hashtags, CTAs
-                    fake_result = {
-                        "texts_created": 5,
-                        "hashtags_included": True,
-                    }
-                
-                elif task.task_type == "validation":
-                    # Would check consistency across sections
-                    fake_result = {
-                        "issues_found": 0,
-                        "quality_score": 95,
-                    }
-                
-                else:
-                    fake_result = {"message": "Simulated response"}
-                
-                # Apply result to DataManager (stubbed here)
-                # In reality: data_manager.update_section(task.target_section, fake_result)
-                
+                task.result = self._execute_task(task, parsed, data_manager, ai_client)
                 task.status = "completed"
-                task.result = fake_result
-                results[task.id] = fake_result
-                
+                results[task.id] = task.result
                 logger.info(f"Completed task: {task.id}")
-                
             except Exception as e:
                 logger.error(f"Failed task {task.id}: {e}")
                 task.status = "failed"
                 results[task.id] = {"error": str(e)}
         
-        # Save final state
-        data_manager.save()
+        if data_manager is not None:
+            data_manager.save()
         
         return {
             "request_summary": parsed.original_text,
@@ -363,4 +315,202 @@ class AITaskRouter:
             "failed": sum(1 for t in ordered_tasks if t.status == "failed"),
             "results_by_task": results,
             "execution_log": [t.to_dict() for t in ordered_tasks],
+        }
+
+    def _execute_task(self, task: SubTask, parsed: ParsedRequest, dm, ai_client=None) -> Dict[str, Any]:
+        """Run a single sub-task against the project data."""
+        if dm is None:
+            raise RuntimeError("DataManager is not connected to the AI panel")
+
+        if task.task_type == "strategy":
+            return self._run_strategy(task, dm, ai_client)
+        if task.task_type == "content_plan":
+            return self._run_content_plan(task, dm)
+        if task.task_type == "media_generation":
+            return self._run_shooting_plan(dm)
+        if task.task_type == "text_generation":
+            return self._run_captions(task, dm)
+        if task.task_type == "validation":
+            return self._run_validation(dm)
+        return {"message": f"Запрос принят: {parsed.original_text[:120]}"}
+
+    # === Handlers ===
+    def _campaign_params(self, task: SubTask) -> Dict[str, Any]:
+        p = task.parameters or {}
+        return {
+            "product": p.get("product") or "проект",
+            "duration_days": max(1, int(p.get("duration_days", 7))),
+            "platforms": p.get("platforms") or ["Instagram"],
+            "quantity": max(1, int(p.get("quantity", 3))),
+        }
+
+    def _run_strategy(self, task: SubTask, dm, ai_client=None) -> Dict[str, Any]:
+        params = self._campaign_params(task)
+        product = params["product"]
+        duration = params["duration_days"]
+        platforms = params["platforms"]
+
+        blocks = self._ai_strategy_blocks(ai_client, product, duration, platforms) or {}
+
+        updated = []
+        defaults = {
+            "positioning": (
+                f"Кампания «{product}» на {duration} дней для платформ {', '.join(platforms)}. "
+                "Фокус — понятная выгода для аудитории и единый визуальный стиль публикаций."
+            ),
+            "utp": (
+                f"Серия публикаций по теме «{product}» с регулярным ритмом и измеримыми целями "
+                f"на {duration} дней: охват, вовлечённость и заявки."
+            ),
+            "tone": "Дружелюбный, уверенный, без канцелярита. Говорим о пользе для клиента и подкрепляем слова примерами.",
+            "channels": ", ".join(platforms),
+        }
+        for section_id in ("positioning", "utp", "tone", "channels"):
+            content = blocks.get(section_id) or defaults[section_id]
+            if dm.update_strategy_section(section_id, content):
+                updated.append(section_id)
+
+        strategy = dm.get_strategy()
+        versions = strategy.setdefault("versions", [])
+        new_version = f"{len(versions) + 1}.0"
+        strategy["version"] = new_version
+        versions.append({
+            "version": new_version,
+            "date": datetime.now().strftime("%d.%m.%Y"),
+            "author": "AI",
+            "changes": f"Кампания «{product}»: стратегия на {duration} дней",
+        })
+        dm.save()
+        return {"sections_updated": updated, "version": new_version, "product": product}
+
+    def _ai_strategy_blocks(self, ai_client, product, duration, platforms) -> Dict[str, str]:
+        """Ask the local LLM for strategy blocks and parse them; None if unavailable."""
+        if ai_client is None or not getattr(ai_client, "available", False):
+            return {}
+        prompt = (
+            f"Составь краткие блоки стратегии SMM-кампании для «{product}» на {duration} дней "
+            f"для платформ {', '.join(platforms)}. Ответ строго в формате, по 1-3 предложения:"
+            "\nПОЗИЦИОНИРОВАНИЕ: ...\nУТП: ...\nTONE OF VOICE: ...\nКАНАЛЫ: ..."
+        )
+        try:
+            raw = ai_client.generate(prompt, system_prompt="Ты опытный SMM-стратег. Отвечай по-русски, только требуемые блоки.")
+        except Exception as e:
+            logger.warning(f"LLM strategy generation failed: {e}")
+            return {}
+        if not raw:
+            return {}
+        mapping = {
+            "positioning": r"ПОЗИЦИОНИРОВАНИЕ\s*:\s*(.+?)(?=\n(?:УТП|TONE|КАНАЛЫ)\s*:|$)",
+            "utp": r"УТП\s*:\s*(.+?)(?=\n(?:ПОЗИЦИОНИРОВАНИЕ|TONE|КАНАЛЫ)\s*:|$)",
+            "tone": r"TONE\s+OF\s+VOICE\s*:\s*(.+?)(?=\n(?:ПОЗИЦИОНИРОВАНИЕ|УТП|КАНАЛЫ)\s*:|$)",
+            "channels": r"КАНАЛЫ\s*:\s*(.+?)$",
+        }
+        blocks = {}
+        for key, pattern in mapping.items():
+            m = re.search(pattern, raw, re.IGNORECASE | re.DOTALL)
+            if m and m.group(1).strip():
+                blocks[key] = m.group(1).strip()
+        return blocks
+
+    def _run_content_plan(self, task: SubTask, dm) -> Dict[str, Any]:
+        params = self._campaign_params(task)
+        product = params["product"]
+        duration = params["duration_days"]
+        platforms = params["platforms"]
+
+        rubric_cycle = [
+            ("Польза", "Пост", "utp", "3 практических совета по теме «{p}»{platforms}"),
+            ("Развлечение", "Reels", "tone", "Закулисье «{p}»: живой момент, эмоции, движение{platforms}"),
+            ("Продажа", "Stories", "utp", "Предложение «{p}»: что получить и как записаться{platforms}"),
+            ("Личное", "Пост", "about", "История клиента «{p}»: путь и результат{platforms}"),
+        ]
+        platform_note = f" для {', '.join(platforms)}" if platforms else ""
+        start = datetime.now() + timedelta(days=1)
+        created = []
+        for i in range(duration):
+            day = start + timedelta(days=i)
+            rubric, fmt, strategy_link, topic_tpl = rubric_cycle[i % len(rubric_cycle)]
+            topic = topic_tpl.format(p=product, platforms=platform_note)
+            new_id = dm.add_content_plan_item({
+                "date": day.strftime("%d.%m.%Y"),
+                "rubric": rubric,
+                "topic": topic,
+                "format": fmt,
+                "status": "Запланировано",
+                "responsible": "AI",
+                "source": "AI",
+                "strategy_link": strategy_link,
+                "platforms": platforms,
+                "shooting_task_id": None,
+            })
+            dm.add_calendar_event({
+                "date": day.strftime("%d.%m.%Y"),
+                "time": "12:00",
+                "type": "publication",
+                "title": topic[:80],
+                "description": f"{fmt} · {rubric} · {', '.join(platforms)}",
+                "link": new_id,
+            })
+            created.append(new_id)
+        dm.save()
+        return {"items_added": len(created), "ids": created, "duration_days": duration}
+
+    def _run_shooting_plan(self, dm) -> Dict[str, Any]:
+        created = []
+        for item in list(dm.get_content_plan()):
+            if item.get("shooting_task_id"):
+                continue
+            if item.get("format") == "Пост" and not item.get("needs_media", True):
+                continue
+            task = dm.create_shooting_task_from_content_plan(item["id"])
+            if task:
+                created.append(task["id"])
+        dm.save()
+        return {"shooting_tasks_created": len(created), "ids": created}
+
+    def _run_captions(self, task: SubTask, dm) -> Dict[str, Any]:
+        params = self._campaign_params(task)
+        product = params["product"]
+        platforms = params["platforms"]
+        cta_by_rubric = {
+            "Продажа": "Запишитесь или напишите в личные сообщения — расскажем детали.",
+            "Польза": "Сохраните пост, чтобы вернуться к советам позже.",
+            "Развлечение": "Отметьте того, с кем это стоит повторить.",
+            "Личное": "Поделитесь своим опытом в комментариях.",
+        }
+        tag_base = re.sub(r"[^\wа-яА-ЯёЁ]+", "", product.lower()) or "проект"
+        updated = 0
+        for item in dm.get_content_plan():
+            if item.get("caption"):
+                continue
+            rubric = item.get("rubric", "Польза")
+            caption = (
+                f"{item.get('topic', product)}.\n\n"
+                f"{cta_by_rubric.get(rubric, cta_by_rubric['Польза'])}\n\n"
+                f"#{tag_base} #smm #контент"
+            )
+            item["caption"] = caption
+            item["hashtags"] = [f"#{tag_base}", "#smm", "#контент"]
+            item["platforms"] = item.get("platforms") or platforms
+            updated += 1
+        dm.save()
+        return {"captions_created": updated}
+
+    def _run_validation(self, dm) -> Dict[str, Any]:
+        """Same plan rules as `validate_plan`, plus empty strategy blocks."""
+        from ai_core import collect_plan_issues
+
+        plan = dm.get_content_plan()
+        issues = [f"{issue['topic']}: {', '.join(issue['problems'])}"
+                  for issue in collect_plan_issues(dm)[0]]
+        if not plan:
+            issues.insert(0, "Контент-план пуст")
+        issues += [f"Стратегия: пустой блок «{section.get('title') or section.get('id') or '—'}»"
+                   for section in dm.get_strategy().get("sections", [])
+                   if not (section.get("content") or "").strip()]
+        return {
+            "issues_found": len(issues),
+            "issues": issues[:15],
+            "quality_score": max(0, 100 - 5 * len(issues)),
+            "checked_items": len(plan),
         }
