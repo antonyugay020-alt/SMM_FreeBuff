@@ -59,7 +59,7 @@ PROCESSED_LABELS = {"instagram_reels": "🎬 Reels", "instagram_post": "🎬 Pos
                     "tiktok": "🎬 TikTok", "youtube_shorts": "🎬 Shorts",
                     "youtube_video": "🎬 YouTube", "subtitles": "💬 Субтитры",
                     "crop": "Кадр", "color": "Цвет", "compress": "Сжатие",
-                    "hosted": "Ссылка"}
+                    "hosted": "Ссылка", "published": "Опубликовано"}
 
 
 def _processed_marks(item: Dict[str, Any]) -> List[str]:
