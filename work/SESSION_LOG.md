@@ -1031,3 +1031,8 @@ GUI:
 - `validate_test` обновлён под новый контракт: вместо проверки записи в журнал и `undo` теперь проверяется отсутствие записи, отсутствие `actions` и что повторная проверка не меняет план (снимок JSON до/после совпадает).
 - Приёмка exit 0; регресс d2, d3, d4, step5–step13, c1–c5, processed, validate, legacy_val, smoke_chain — все 0; compileall — 0.
 - Живая приёмка на локальной модели в этой среде невозможна: `ollama` не установлен, порт 11434 закрыт (connection refused), ключей облака в окружении нет. Добавлен `work/acceptance_live.py` для запуска на машине пользователя: печатает реальные тексты модели и время по шагам, без доступной Ollama завершается кодом 2 с подсказкой (здесь exit 2, как и ожидалось).
+
+## 22.11.2026 — thinking Qwen3 больше не ломает стратегию
+- `ai_core`: `THINK_BLOCK`/`_strip_thinking`, `_balanced_objects`, `_json_candidates`; `generate_strategy_sections` и `AIRouter._from_model` перебирают кандидатов и берут подходящего. `_extract_json` — первый кандидат.
+- Проверено `.scratch/t_thinking.py`: 8 вариантов ответа (<thinking> с примером JSON и ```json, <thinking> + голый JSON, рассуждения без тегов, незакрытый <thinking>, текст вокруг, скобки внутри строк, ```json, голый JSON) — стратегия собирается там, где ответ есть, и не собирается на обрезанном рассуждении; роутер на примере `{"tool": "delete_record"}` внутри thinking выбирает настоящий `create_content_plan`.
+- Приёмка exit 0; регресс d2, d3, d4, step5–step13, c1–c5, processed, validate, legacy_val, smoke_chain — все 0; compileall — 0; read-only и четыре правки — 0; `work/acceptance_live.py` здесь exit 2 (Ollama нет).

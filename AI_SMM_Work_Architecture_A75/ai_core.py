@@ -1687,20 +1687,23 @@ class AIRouter:
     def _from_model(self, result: LLMResult, layer: str) -> Optional[RouteDecision]:
         if not result.text or result.error:
             return None
-        data = _extract_json(result.text)
-        if not isinstance(data, dict):
-            return None
-        if data.get("clarify"):
-            return RouteDecision("", {}, layer, 0.0, str(data["clarify"]))
-        tool = str(data.get("tool") or "")
-        if tool not in self.registry.tools:
+        data = None
+        for candidate in _json_candidates(result.text):
+            if not isinstance(candidate, dict):
+                continue
+            if candidate.get("clarify"):
+                return RouteDecision("", {}, layer, 0.0, str(candidate["clarify"]))
+            if str(candidate.get("tool") or "") in self.registry.tools:
+                data = candidate
+                break
+        if data is None:
             return None
         try:
             confidence = float(data.get("confidence", 0))
         except (TypeError, ValueError):
             confidence = 0.0
         args = data.get("args") if isinstance(data.get("args"), dict) else {}
-        return RouteDecision(tool, args, layer, confidence)
+        return RouteDecision(str(data.get("tool") or ""), args, layer, confidence)
 
     def _ask(self, provider, purpose: str) -> Optional[RouteDecision]:
         if provider is None or not provider.available():
@@ -1788,10 +1791,12 @@ class AIRouter:
                   "Пиши по-русски, 2–4 предложения на блок.")
         user = f"Бриф: {brief}\nБренд-профиль: {json.dumps(profile, ensure_ascii=False)}"
         raw = self._generate(system, user, "strategy")
-        data = _extract_json(raw) or {}
-        sections = data.get("sections") if isinstance(data, dict) else None
-        if isinstance(sections, list) and sections:
-            return [s for s in sections if isinstance(s, dict)]
+        for data in _json_candidates(raw):
+            sections = data.get("sections") if isinstance(data, dict) else None
+            if isinstance(sections, list):
+                built = [s for s in sections if isinstance(s, dict)]
+                if built:
+                    return built
         return []
 
     def write_caption(self, brief: str) -> str:
@@ -1848,23 +1853,69 @@ def _period_days(text: str) -> int:
     return amount * 7 if unit.startswith("недел") else amount * 30 if unit.startswith("месяц") else amount
 
 
-def _extract_json(text: str) -> Optional[Any]:
+THINK_BLOCK = re.compile(r"<think(?:ing)?>.*?(?:</think(?:ing)?>|\Z)", re.S | re.I)
+
+
+def _strip_thinking(text: str) -> str:
+    """Убрать блок рассуждений Qwen3: в нём бывают примеры JSON и лишние скобки."""
+    return THINK_BLOCK.sub("", str(text or "")).strip()
+
+
+def _balanced_objects(text: str) -> List[Any]:
+    """Все объекты и массивы в тексте, границы — по вложенности и строкам, без угадывания."""
+    found: List[Any] = []
+    for start, char in enumerate(text):
+        if char not in "{[":
+            continue
+        closing = "}" if char == "{" else "]"
+        depth, in_string, escaped = 0, False, False
+        for index in range(start, len(text)):
+            symbol = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif symbol == "\\":
+                    escaped = True
+                elif symbol == '"':
+                    in_string = False
+                continue
+            if symbol == '"':
+                in_string = True
+            elif symbol == char:
+                depth += 1
+            elif symbol == closing:
+                depth -= 1
+                if depth == 0:
+                    try:
+                        found.append(json.loads(text[start:index + 1]))
+                    except ValueError:
+                        pass
+                    break
+    return found
+
+
+def _json_candidates(text: str) -> List[Any]:
+    """Все варианты JSON из ответа модели: в рассуждениях Qwen3 бывают свои примеры."""
     if not text:
-        return None
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```[a-zA-Z]*\n?|```$", "", cleaned).strip()
-    try:
-        return json.loads(cleaned)
-    except ValueError:
-        pass
-    start, end = cleaned.find("{"), cleaned.rfind("}")
-    if start >= 0 and end > start:
+        return []
+    cleaned = _strip_thinking(text)
+    blocks = [cleaned, re.sub(r"^```[a-zA-Z]*\n?|```$", "", cleaned).strip()]
+    blocks += [block.strip() for block in re.findall(r"```[a-zA-Z]*\n?(.*?)```", cleaned, re.S)]
+    found: List[Any] = []
+    for candidate in blocks:
         try:
-            return json.loads(cleaned[start:end + 1])
+            value = json.loads(candidate)
         except ValueError:
-            return None
-    return None
+            continue
+        if value not in found:
+            found.append(value)
+    found.extend(_balanced_objects(cleaned))
+    return found
+
+
+def _extract_json(text: str) -> Optional[Any]:
+    candidates = _json_candidates(text)
+    return candidates[0] if candidates else None
 
 
 # === Brand interview ===
