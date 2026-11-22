@@ -918,22 +918,33 @@ class PublicationsSection(DataSection):
         if updated:
             self._select(updated)
 
+    def _video_from_disk(self, title: str) -> str:
+        """Файл с диска: если в медиатеке не выделено видео, можно взять путь к файлу."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, title, str(Path.home()),
+            "Видео (*.mp4 *.mov *.mkv *.avi *.webm *.m4v)")
+        return path or ""
+
+
     def _process_video(self):
-        """Выбрать площадку и подготовить текущее видео через process_video."""
+        """Выбрать площадку и подготовить видео из медиатеки или файла на диске."""
         from ai_core import VIDEO_TARGETS
 
         item = self.current
-        if not item or item.get("type") != "video":
-            QMessageBox.information(self, "Видео", "Выберите видео в медиатеке.")
+        media_id = item.get("id") if item and item.get("type") == "video" else None
+        path = "" if media_id else self._video_from_disk("Видео под площадку")
+        if not media_id and not path:
+            QMessageBox.information(self, "Видео",
+                                    "Выберите видео в медиатеке или файл на диске.")
             return
         labels = {label: key for key, (label, _suffix) in VIDEO_TARGETS.items()}
+        source = f"Материал: {item.get('name', '')}\n" if media_id else f"Файл: {Path(path).name}\n"
         choice, ok = QInputDialog.getItem(
-            self, "Видео под площадку",
-            f"Материал: {item.get('name', '')}\nКуда готовим:", list(labels), 0, False)
+            self, "Видео под площадку", f"{source}Куда готовим:", list(labels), 0, False)
         if not ok:
             return
-        media_id = item.get("id")
-        text = self.run_full("process_video", media_ids=[media_id], platform=labels[choice])
+        text = self.run_full("process_video", media_ids=[media_id] if media_id else [],
+                             platform=labels[choice], paths=[path] if path else [])
         summary = text.splitlines()[0] if text else ""
         QMessageBox.information(self, "Видео под площадку", summary or "Готово")
         self._refresh_all()
@@ -942,20 +953,23 @@ class PublicationsSection(DataSection):
             self._select(updated)
 
     def _process_subtitles(self):
-        """Распознать речь в текущем видео: только .srt или видео с выжженными субтитрами."""
+        """Распознать речь в видео из медиатеки или файле на диске: .srt или с выжиганием."""
         item = self.current
-        if not item or item.get("type") != "video":
-            QMessageBox.information(self, "Субтитры", "Выберите видео в медиатеке.")
+        media_id = item.get("id") if item and item.get("type") == "video" else None
+        path = "" if media_id else self._video_from_disk("Субтитры")
+        if not media_id and not path:
+            QMessageBox.information(self, "Субтитры",
+                                    "Выберите видео в медиатеке или файл на диске.")
             return
         modes = {"Видео с субтитрами": True, "Только .srt": False}
+        source = f"Материал: {item.get('name', '')}\n" if media_id else f"Файл: {Path(path).name}\n"
         choice, ok = QInputDialog.getItem(
-            self, "Субтитры", f"Материал: {item.get('name', '')}\nЧто сделать:",
-            list(modes), 0, False)
+            self, "Субтитры", f"{source}Что сделать:", list(modes), 0, False)
         if not ok:
             return
-        media_id = item.get("id")
-        text = self.run_full("make_subtitles", media_ids=[media_id], language="ru",
-                             burn=modes[choice])
+        text = self.run_full("make_subtitles", media_ids=[media_id] if media_id else [],
+                             language="ru", burn=modes[choice],
+                             paths=[path] if path else [])
         summary = text.splitlines()[0] if text else ""
         QMessageBox.information(self, "Субтитры", summary or "Готово")
         self._refresh_all()

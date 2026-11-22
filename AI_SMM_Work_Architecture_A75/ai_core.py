@@ -320,6 +320,31 @@ VIDEO_TARGETS = {
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
 MEDIA_ZONES = ("media_ready", "media_sources", "media_references")
 
+_PATH_RE = re.compile(r"(?<![\w/])([~./][^\s\"'«»]*(?:\.(?:mp4|mov|mkv|avi|webm|m4v)))",
+                      re.IGNORECASE)
+
+
+def _video_paths(text: str) -> List[str]:
+    """Пути к видеофайлам в тексте задачи: без них видео из чата не запустить."""
+    found: List[str] = []
+    for match in _PATH_RE.findall(text or ""):
+        path = match.strip(",;:)]")
+        if path and path not in found:
+            found.append(path)
+    return found
+
+
+def _platform_from_text(low: str) -> str:
+    """Слово площадки в тексте → ключ `VIDEO_TARGETS`."""
+    for words, target in ((("тикток", "tiktok"), "tiktok"),
+                          (("шортс", "shorts"), "youtube_shorts"),
+                          (("ютуб", "youtube"), "youtube_video"),
+                          (("пост", "1:1", "квадрат"), "instagram_post"),
+                          (("рилс", "reels"), "instagram_reels")):
+        if any(word in low for word in words):
+            return target
+    return "instagram_reels"
+
 
 def material_kind(path: Path) -> str:
     return MATERIAL_KINDS.get(Path(path).suffix.lower(), "file")
@@ -754,6 +779,67 @@ class AITools:
     MEDIA_ZONES = {"sources": "media_sources", "references": "media_references",
                    "ready": "media_ready"}
 
+    def _add_media_record(self, path: Path, zone_key: str) -> Optional[Dict[str, Any]]:
+        """Скопировать файл в проект и завести запись в зоне; исходный путь — в `source_path`."""
+        try:
+            dest = self._copy_media(path)
+        except OSError as exc:
+            logger.warning("import copy failed: %s", exc)
+            return None
+        record = {
+            "id": f"{zone_key[:5]}_{datetime.now().strftime('%H%M%S%f')[:10]}",
+            "name": dest.name,
+            "type": "video" if dest.suffix.lower() in VIDEO_SUFFIXES else "image",
+            "size": "unknown",
+            "path": str(dest),
+            "source_path": str(path),
+        }
+        if zone_key == "media_references":
+            record["category"] = "референс"
+        else:
+            record.update({"status": "pending",
+                           "date": datetime.now().strftime("%d.%m.%Y")})
+        self.dm._data.setdefault(zone_key, []).append(record)
+        return record
+
+    def _ids_from_paths(self, paths: Optional[List[str]]) -> Tuple[List[str], List[str]]:
+        """Записи по путям из чата: знакомые файлы — по записи, чужие копируются в проект."""
+        wanted = [str(path).strip() for path in (paths or []) if str(path).strip()]
+        if not wanted:
+            return [], []
+        by_path: Dict[str, str] = {}
+        for zone in MEDIA_ZONES:
+            for record in self.dm._data.get(zone, []):
+                if not record.get("id"):
+                    continue
+                for key in ("path", "source_path"):
+                    value = str(record.get(key) or "").strip()
+                    if value:
+                        by_path.setdefault(value, str(record["id"]))
+        ids: List[str] = []
+        problems: List[str] = []
+        created = False
+        for raw in wanted:
+            path = Path(raw).expanduser()
+            known = by_path.get(str(path)) or by_path.get(str(path.absolute()))
+            if known:
+                if known not in ids:
+                    ids.append(known)
+                continue
+            if not path.is_file():
+                problems.append(f"{path.name}: файл не найден")
+                continue
+            record = self._add_media_record(path, "media_ready")
+            if record is None:
+                problems.append(f"{path.name}: не удалось скопировать в проект")
+                continue
+            created = True
+            if record["id"] not in ids:
+                ids.append(record["id"])
+        if created:
+            self.dm.save()
+        return ids, problems
+
     def import_media(self, paths: Optional[List[str]] = None, zone: str = "sources") -> Dict[str, Any]:
         zone_key = self.MEDIA_ZONES.get(str(zone or "sources"), "media_sources")
         before = copy.deepcopy(self.dm._data.get(zone_key, []))
@@ -768,25 +854,10 @@ class AITools:
                 if entry:
                     added.append(entry.get("name"))
                 continue
-            try:
-                dest = self._copy_media(path)
-            except OSError as exc:
-                logger.warning("import copy failed: %s", exc)
+            record = self._add_media_record(path, zone_key)
+            if record is None:
                 missing.append(path.name)
                 continue
-            record = {
-                "id": f"{zone_key[:5]}_{datetime.now().strftime('%H%M%S%f')[:10]}",
-                "name": dest.name,
-                "type": "video" if dest.suffix.lower() in (".mp4", ".mov", ".avi", ".mkv") else "image",
-                "size": "unknown",
-                "path": str(dest),
-            }
-            if zone_key == "media_references":
-                record["category"] = "референс"
-            else:
-                record.update({"status": "pending",
-                               "date": datetime.now().strftime("%d.%m.%Y")})
-            self.dm._data.setdefault(zone_key, []).append(record)
             added.append(record["name"])
         if not added:
             return {"summary": "Файлы не добавлены: укажите существующие пути",
@@ -927,27 +998,40 @@ class AITools:
             self.video = VideoProcessor()
         return self.video
 
+    @staticmethod
+    def _remember(record: Dict[str, Any], *keys: str) -> None:
+        """Дописать операции в `processed`: старые сохраняются, дублей не появляется."""
+        marks = [str(mark) for mark in record.get("processed") or []]
+        for key in keys:
+            if key and key not in marks:
+                marks.append(key)
+        record["processed"] = marks
+
     def process_video(self, media_ids: Optional[List[str]] = None,
-                      platform: str = "instagram_reels") -> Dict[str, Any]:
+                      platform: str = "instagram_reels",
+                      paths: Optional[List[str]] = None) -> Dict[str, Any]:
         """Подготовить видео под площадку: размер, кадры, сжатие — всегда от исходника."""
         target = str(platform or "").strip().lower()
         if target not in VIDEO_TARGETS:
             return {"summary": f"Неизвестная площадка: {platform or '—'}",
-                    "effect": {}, "undo": {}}
-        found = self._media_records(media_ids)
-        if not found:
-            return {"summary": "Нечего обрабатывать: материалы не найдены",
                     "effect": {}, "undo": {}}
         processor = self._video_processor()
         if not processor.ffmpeg_available:
             return {"summary": "Нужен ffmpeg: без него видео не обработать",
                     "effect": {}, "undo": {}}
 
+        from_paths, problems = self._ids_from_paths(paths)
+        found = self._media_records(list(media_ids or []) + from_paths)
+        if not found:
+            return {"summary": "Нечего обрабатывать: " +
+                               ("; ".join(problems[:3]) or "материалы не найдены"),
+                    "effect": {}, "undo": {}}
+
         label, suffix = VIDEO_TARGETS[target]
         before: Dict[str, Any] = {}
         done: List[str] = []
         files: List[str] = []
-        skipped: List[str] = []
+        skipped: List[str] = list(problems)
         for media_id, zone, record in found:
             source = self._video_source(record)
             if source is None:
@@ -964,7 +1048,7 @@ class AITools:
             if info.get("width") and info.get("height"):
                 record["size"] = f"{info['width']}x{info['height']}"
             record["source_path"] = str(source)
-            record["processed"] = [target]
+            self._remember(record, target)
             done.append(media_id)
             files.append(str(dest))
 
@@ -999,22 +1083,26 @@ class AITools:
         return source.stem
 
     def make_subtitles(self, media_ids: Optional[List[str]] = None,
-                       language: str = "ru", burn: bool = True) -> Dict[str, Any]:
+                       language: str = "ru", burn: bool = True,
+                       paths: Optional[List[str]] = None) -> Dict[str, Any]:
         """Распознать речь: `.srt` в проект и, если нужно, видео с выжженными субтитрами."""
-        found = self._media_records(media_ids)
-        if not found:
-            return {"summary": "Нечего распознавать: материалы не найдены",
-                    "effect": {}, "undo": {}}
         processor = self._video_processor()
         if not processor.ffmpeg_available:
             return {"summary": "Нужен ffmpeg: без него субтитры не собрать",
+                    "effect": {}, "undo": {}}
+
+        from_paths, problems = self._ids_from_paths(paths)
+        found = self._media_records(list(media_ids or []) + from_paths)
+        if not found:
+            return {"summary": "Нечего распознавать: " +
+                               ("; ".join(problems[:3]) or "материалы не найдены"),
                     "effect": {}, "undo": {}}
 
         subtitles = Path(self.dm.data_dir) / "subtitles"
         before: Dict[str, Any] = {}
         done: List[str] = []
         files: List[str] = []
-        skipped: List[str] = []
+        skipped: List[str] = list(problems)
         srt_count = 0
         for media_id, zone, record in found:
             source = self._video_source(record)
@@ -1048,7 +1136,7 @@ class AITools:
             record["path"] = str(dest)
             record["name"] = dest.name
             record["source_path"] = str(source)
-            record["processed"] = ["subtitles"]
+            self._remember(record, "subtitles")
             done.append(media_id)
             files.append(str(dest))
 
@@ -1247,6 +1335,22 @@ class AIRouter:
                                      "rules", 0.4,
                                      "Нет позиции плана без ТЗ. Сначала добавьте пост в план.")
             return RouteDecision("create_shooting_task", {"plan_id": plan_id}, "rules")
+        if re.search(r"видео.{0,30}(рилс|reels|тикток|tiktok|шортс|shorts|пост|1:1|ютуб|youtube)"
+                     r"|(рилс|reels|тикток|tiktok|шортс|shorts).{0,30}видео", low):
+            paths = _video_paths(text)
+            if not paths:
+                return RouteDecision("", {}, "rules", 0.4,
+                                     "Пришли путь к видеофайлу или выбери видео в «Публикациях».")
+            return RouteDecision("process_video",
+                                 {"platform": _platform_from_text(low), "paths": paths}, "rules")
+        if re.search(r"субтитр", low):
+            paths = _video_paths(text)
+            if not paths:
+                return RouteDecision("", {}, "rules", 0.4,
+                                     "Пришли путь к видеофайлу или выбери видео в «Публикациях».")
+            return RouteDecision("make_subtitles",
+                                 {"paths": paths, "language": "ru",
+                                  "burn": "srt" not in low}, "rules")
         if re.search(r"pdf|печатн", low) and re.search(r"план|стратег|выгруз", low):
             return RouteDecision("export_pdf",
                                  {"kind": "strategy" if "стратег" in low else "plan"},
@@ -1308,7 +1412,7 @@ class AIRouter:
 
     def route(self, text: str) -> RouteDecision:
         decision = self._rules(text)
-        if decision and decision.tool:
+        if decision and (decision.tool or decision.clarify):
             return decision
 
         local = self._ask(self.local, text)
@@ -1549,12 +1653,13 @@ class AICore:
                                         needs_confirmation=lambda a: len(a.get("media_ids") or []) > 10))
         self.registry.register(ToolSpec("process_video",
                                         "видео под площадку: 9:16 или 1:1, сжатие",
-                                        {"media_ids": list, "platform": str},
+                                        {"media_ids": list, "platform": str, "paths": list},
                                         self.tools.process_video,
                                         needs_confirmation=lambda a: len(a.get("media_ids") or []) > 5))
         self.registry.register(ToolSpec("make_subtitles",
                                         "распознать речь: .srt и видео с субтитрами",
-                                        {"media_ids": list, "language": str, "burn": bool},
+                                        {"media_ids": list, "language": str, "burn": bool,
+                                         "paths": list},
                                         self.tools.make_subtitles,
                                         needs_confirmation=lambda a: len(a.get("media_ids") or []) > 3))
         self.registry.register(ToolSpec("export_pdf", "план или стратегия в PDF",
