@@ -1807,6 +1807,84 @@ AGENT_SYSTEM = (
 )
 
 
+ACTION_DONE_WORDS = {"done", "finish", "finished", "stop", "answer", "final", "complete"}
+ACTION_ASK_WORDS = {"ask", "question", "clarify", "need_info", "help"}
+TOOL_KEYS = ("tool", "tool_name", "name", "function", "command", "action")
+ARGS_KEYS = ("args", "arguments", "params", "parameters", "input", "tool_args")
+
+
+def _as_args(value: Any) -> Dict[str, Any]:
+    """Аргументы бывают словарём, JSON-строкой или мусором."""
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return value if isinstance(value, dict) else {}
+
+
+def normalize_agent_action(data: Any, names) -> Optional[Dict[str, Any]]:
+    """Привести ответ модели к шагу агента: tool / done / ask.
+
+    Модели присылают шаг по-разному: лишний текст вокруг, `tool_name` вместо `tool`,
+    аргументы строкой, вложенный `step`, список из одного шага, имя инструмента как ключ.
+    """
+    if isinstance(data, list):
+        for entry in data:
+            found = normalize_agent_action(entry, names)
+            if found:
+                return found
+        return None
+    if not isinstance(data, dict):
+        return None
+    for key in ("step", "action", "response", "result", "next", "function", "tool_call"):
+        if isinstance(data.get(key), dict):
+            nested = normalize_agent_action(data[key], names)
+            if nested:
+                return nested
+    for key in ("tool_calls", "calls"):
+        if isinstance(data.get(key), list):
+            nested = normalize_agent_action(data[key], names)
+            if nested:
+                return nested
+    say = ""
+    for key in ("say", "answer", "message", "text", "summary", "reply"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            say = value.strip()
+            break
+    tool = ""
+    for key in TOOL_KEYS:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip() in names:
+            tool = value.strip()
+            break
+    if not tool:
+        matches = [key for key in data if key in names]
+        if len(matches) == 1:
+            tool = matches[0]
+    args: Dict[str, Any] = {}
+    for key in ARGS_KEYS + ((tool,) if tool else ()):
+        if key in data:
+            args = _as_args(data.get(key))
+            if args:
+                break
+    kind = ""
+    for key in ("action", "type", "kind", "status"):
+        value = data.get(key)
+        if isinstance(value, str):
+            kind = value.strip().lower()
+            break
+    if tool:
+        return {"kind": "tool", "tool": tool, "args": args, "say": say}
+    if kind in ACTION_ASK_WORDS or data.get("question"):
+        return {"kind": "ask", "say": say or str(data.get("question") or "").strip()}
+    if kind in ACTION_DONE_WORDS or say:
+        return {"kind": "done", "say": say}
+    return None
+
+
 class AIAgent:
     """Многошаговый исполнитель: модель выбирает инструменты по задаче и состоянию проекта."""
 
@@ -1856,6 +1934,7 @@ class AIAgent:
         history: List[str] = []
         actions: List[Dict[str, Any]] = []
         catalog = self.tools_catalog()
+        nudged = False
         for step in range(AGENT_STEPS):
             done_text = "\n".join(f"{number}. {line}" for number, line in enumerate(history, 1))
             prompt = (f"Задача пользователя: {task}\n\n"
@@ -1866,22 +1945,34 @@ class AIAgent:
             result = provider.chat(AGENT_SYSTEM, prompt, temperature=0.1, max_tokens=400)
             if self.router.budget is not None:
                 self.router.budget.record(self.router.project_id, "agent", result)
-            data = _extract_json(result.text or "") or {}
-            kind = str(data.get("action") or "").strip().lower()
-            say = str(data.get("say") or "").strip()
-            if kind in ("done", "ask"):
-                return AIReply(say or "Готово.", "agent", actions)
-            tool = str(data.get("tool") or "").strip()
-            if not tool:
+            action = normalize_agent_action(_extract_json(result.text or ""),
+                                            set(self.registry.names()))
+            if action is None:
+                plain = _strip_thinking(result.text or "").strip()
                 if step == 0:
                     return None
-                return AIReply("Остановился: модель не дала следующий шаг.\n"
-                               + ("\n".join(history) or ""), "agent", actions)
+                if plain and not plain.lstrip().startswith(("{", "[")):
+                    return AIReply(plain[:800], "agent", actions)
+                history.append("ответ не разобран как шаг — нужен JSON с tool/args или action=done")
+                continue
+            kind = "done" if action["kind"] == "done" else action["kind"]
+            say = str(action.get("say") or "").strip()
+            if kind in ("done", "ask"):
+                if kind == "done" and not history and not actions and not nudged:
+                    nudged = True
+                    history.append("ещё ничего не сделано — выбери инструмент или action=ask")
+                    continue
+                return AIReply(say or ("Готово." if kind == "done" else "Уточни задачу."),
+                               "agent", actions)
+            tool = str(action.get("tool") or "").strip()
+            if not tool:
+                history.append("в шаге нет имени инструмента")
+                continue
             if tool not in self.registry.names() or tool in AGENT_DENY:
                 history.append(f"{tool}: инструмент недоступен")
                 continue
             spec = self.registry.get(tool)
-            raw_args = data.get("args") if isinstance(data.get("args"), dict) else {}
+            raw_args = action.get("args") if isinstance(action.get("args"), dict) else {}
             args = {key: value for key, value in raw_args.items() if key in spec.args}
             reply = self.core._execute(tool, args, "agent")
             actions.extend(reply.actions or [])

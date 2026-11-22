@@ -2,6 +2,7 @@
 
     python work/tests/run_tests.py              # все проверки
     python work/tests/run_tests.py --publish    # только публикация в Instagram
+    python work/tests/run_tests.py --live       # живой прогон агента на вашей Ollama
     python work/tests/run_tests.py test_c4.py   # одна проверка по имени
 
 Ничего не публикует и не трогает проект: тесты работают во временных каталогах,
@@ -58,10 +59,13 @@ def _stdout_encoding() -> str:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     publish_only = "--publish" in argv
+    live_only = "--live" in argv
     names = [arg for arg in argv if not arg.startswith("-")]
     files = sorted(HERE.glob("test_*.py"))
     if publish_only:
         files = [path for path in files if path.name in PUBLISH_TESTS]
+    if live_only:
+        files = [HERE / "live_agent.py"]
     if names:
         wanted = {name if name.endswith(".py") else f"{name}.py" for name in names}
         files = [path for path in files if path.name in wanted]
@@ -75,7 +79,8 @@ def main(argv: list[str] | None = None) -> int:
     fails: list[str] = []
     for path in files:
         result = subprocess.run([sys.executable, str(path)], capture_output=True, text=True,
-                                env=env, cwd=str(HERE), timeout=600,
+                                env=env, cwd=str(HERE),
+                                timeout=1800 if live_only else 600,
                                 encoding="utf-8", errors="replace")
         passed = result.returncode == 0
         print(("  OK  " if passed else " FAIL ") + path.name)

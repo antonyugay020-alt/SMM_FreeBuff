@@ -122,4 +122,44 @@ dm, core, stub = build([])
 core.handle("проверь план")
 ok("правило быстрее модели", not stub.calls, stub.calls)
 
+
+# --- «грязные» ответы модели: работа продолжается ---
+MALFORMED = [
+    ("текст вокруг JSON", 'Сейчас создам план.\n{"tool": "create_content_plan", "args": {"count": 2}}\nГотово.'),
+    ("action вместо tool", '{"action": "create_content_plan", "args": {"count": 2}}'),
+    ("args строкой", '{"tool": "create_content_plan", "args": "{\\"count\\": 2}"}'),
+    ("вложенный step", '{"step": {"tool_name": "create_content_plan", "arguments": {"count": 2}}}'),
+    ("список из шага", '[{"name": "create_content_plan", "args": {"count": 2}}]'),
+    ("имя инструмента ключом", '{"create_content_plan": {"count": 2}}'),
+    ("```json блок", '```json\n{"tool": "create_content_plan", "args": {"count": 2}}\n```'),
+    ("function-вызов", '{"function": {"name": "create_content_plan", "arguments": "{\\"count\\": 2}"}}'),
+    ("tool_calls-список", '{"tool_calls": [{"function": {"name": "create_content_plan", "arguments": {"count": 2}}}]}'),
+]
+for name, first in MALFORMED:
+    dm, core, stub = build([first, '{"action": "done", "say": "План готов."}'])
+    reply = core.handle("подготовь контент")
+    ok(f"грязный ответ: {name}",
+       len(dm.get_content_plan()) == 2 and "План готов" in reply.text,
+       (len(dm.get_content_plan()), reply.text))
+
+# --- done с полем answer ---
+dm, core, stub = build(['{"type": "finish", "answer": "Всё готово."}'] * 2)
+reply = core.handle("подготовь контент")
+ok("done по полю answer", reply.layer == "agent" and "готово" in reply.text.lower(), reply.text)
+
+# --- пустое «готово» не принимается, пока ничего не сделано ---
+dm, core, stub = build([
+    '{"action": "done", "say": "Готово."}',
+    '{"action": "tool", "tool": "create_content_plan", "args": {"count": 1}}',
+    '{"action": "done", "say": "Готово: 1 пост."}'])
+reply = core.handle("нужен контент")
+ok("не принял пустое «готово»", len(dm.get_content_plan()) == 1, len(dm.get_content_plan()))
+
+# --- проза после первого шага становится ответом ---
+dm, core, stub = build([
+    '{"tool": "create_content_plan", "args": {"count": 1}}',
+    "План создан, больше ничего не нужно."])
+reply = core.handle("нужен контент")
+ok("проза после шага — ответ", "План создан" in reply.text, reply.text)
+
 print("AGENT_DONE")
