@@ -13,6 +13,8 @@ at the monthly limit from settings.
 from __future__ import annotations
 
 import copy
+import difflib
+import inspect
 import json
 import logging
 import os
@@ -125,15 +127,18 @@ class OllamaProvider:
             return False
 
     def chat(self, system: str, user: str, temperature: float = 0.2,
-             max_tokens: int = 2048) -> LLMResult:
+             max_tokens: int = 2048, fmt: str = "") -> LLMResult:
+        """fmt="json" — Ollama сама держит ответ в JSON (шаг агента)."""
         started = time.time()
-        payload = {
+        payload: Dict[str, Any] = {
             "model": self.model,
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": user}],
             "stream": False,
             "options": {"temperature": temperature, "num_predict": max_tokens},
         }
+        if fmt:
+            payload["format"] = fmt
         try:
             resp = requests.post(f"{self.host}/api/chat", json=payload, timeout=self.timeout)
             data = resp.json()
@@ -1807,8 +1812,11 @@ AGENT_SYSTEM = (
 )
 
 
+AGENT_UNKNOWN_LIMIT = 2
+
 ACTION_DONE_WORDS = {"done", "finish", "finished", "stop", "answer", "final", "complete"}
 ACTION_ASK_WORDS = {"ask", "question", "clarify", "need_info", "help"}
+ACTION_TOOL_WORDS = {"tool", "call", "use", "run", "execute", "invoke", "act"}
 TOOL_KEYS = ("tool", "tool_name", "name", "function", "command", "action")
 ARGS_KEYS = ("args", "arguments", "params", "parameters", "input", "tool_args")
 
@@ -1864,6 +1872,17 @@ def normalize_agent_action(data: Any, names) -> Optional[Dict[str, Any]]:
         matches = [key for key in data if key in names]
         if len(matches) == 1:
             tool = matches[0]
+    claimed = ""
+    if not tool:
+        for key in TOOL_KEYS:
+            value = data.get(key)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            candidate = value.strip()
+            if candidate.lower() in ACTION_DONE_WORDS | ACTION_ASK_WORDS | ACTION_TOOL_WORDS:
+                continue
+            claimed = candidate
+            break
     args: Dict[str, Any] = {}
     for key in ARGS_KEYS + ((tool,) if tool else ()):
         if key in data:
@@ -1876,13 +1895,33 @@ def normalize_agent_action(data: Any, names) -> Optional[Dict[str, Any]]:
         if isinstance(value, str):
             kind = value.strip().lower()
             break
-    if tool:
-        return {"kind": "tool", "tool": tool, "args": args, "say": say}
+    if tool or claimed:
+        # выдуманное имя тоже шаг: агент скажет модели, что такого инструмента нет
+        return {"kind": "tool", "tool": tool or claimed, "args": args, "say": say}
     if kind in ACTION_ASK_WORDS or data.get("question"):
         return {"kind": "ask", "say": say or str(data.get("question") or "").strip()}
+    if kind in ACTION_TOOL_WORDS:
+        # "action": "tool" без имени — не «готово»
+        return {"kind": "tool", "tool": "", "args": args, "say": say}
     if kind in ACTION_DONE_WORDS or say:
         return {"kind": "done", "say": say}
     return None
+
+
+def _chat_takes_format(provider) -> bool:
+    """Умеет ли провайдер просить JSON-формат ответа (`fmt`)."""
+    try:
+        return "fmt" in inspect.signature(provider.chat).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _agent_chat(provider, system: str, user: str) -> LLMResult:
+    """Шаг агента: просим у Ollama JSON-формат, чтобы модель не писала прозу вокруг шага."""
+    kwargs: Dict[str, Any] = {"temperature": 0.1, "max_tokens": 400}
+    if _chat_takes_format(provider):
+        kwargs["fmt"] = "json"
+    return provider.chat(system, user, **kwargs)
 
 
 class AIAgent:
@@ -1934,7 +1973,9 @@ class AIAgent:
         history: List[str] = []
         actions: List[Dict[str, Any]] = []
         catalog = self.tools_catalog()
+        allowed = {name for name in self.registry.names() if name not in AGENT_DENY}
         nudged = False
+        unknown: List[str] = []
         for step in range(AGENT_STEPS):
             done_text = "\n".join(f"{number}. {line}" for number, line in enumerate(history, 1))
             prompt = (f"Задача пользователя: {task}\n\n"
@@ -1942,7 +1983,7 @@ class AIAgent:
                       f"Уже сделано:\n{done_text or 'ничего'}\n\n"
                       f"Доступные инструменты:\n{catalog}\n\n"
                       "Выбери следующий шаг. Если задача выполнена — action=done.")
-            result = provider.chat(AGENT_SYSTEM, prompt, temperature=0.1, max_tokens=400)
+            result = _agent_chat(provider, AGENT_SYSTEM, prompt)
             if self.router.budget is not None:
                 self.router.budget.record(self.router.project_id, "agent", result)
             action = normalize_agent_action(_extract_json(result.text or ""),
@@ -1966,10 +2007,20 @@ class AIAgent:
                                "agent", actions)
             tool = str(action.get("tool") or "").strip()
             if not tool:
-                history.append("в шаге нет имени инструмента")
+                history.append("в шаге нет имени инструмента — нужен JSON с полем tool")
                 continue
-            if tool not in self.registry.names() or tool in AGENT_DENY:
-                history.append(f"{tool}: инструмент недоступен")
+            if tool not in allowed:
+                unknown.append(tool)
+                if tool in AGENT_DENY:
+                    hint = f"{tool}: этим инструментом я не пользуюсь."
+                else:
+                    hint = f"{tool}: такого инструмента нет."
+                close = difflib.get_close_matches(tool, sorted(allowed), n=3, cutoff=0.5)
+                if close:
+                    hint += f" Ближайшие по смыслу: {', '.join(close)}."
+                history.append(hint + " Не заканчивай задачу — выбери шаг из списка.")
+                if len(unknown) >= AGENT_UNKNOWN_LIMIT:
+                    return AIReply(self._unknown_reply(unknown, actions), "agent", actions)
                 continue
             spec = self.registry.get(tool)
             raw_args = action.get("args") if isinstance(action.get("args"), dict) else {}
@@ -1981,6 +2032,15 @@ class AIAgent:
         tail = "\n".join(history[-4:])
         return AIReply(f"Остановился на лимите шагов ({AGENT_STEPS}). Что успел:\n{tail}",
                        "agent", actions)
+
+    @staticmethod
+    def _unknown_reply(unknown: List[str], actions: List[Dict[str, Any]]) -> str:
+        """Модель просит несуществующие инструменты — честно останавливаемся."""
+        names = ", ".join(dict.fromkeys(unknown))
+        done = (f" Уже сделано действий: {len(actions)}." if actions else " Ничего не изменил.")
+        return (f"Останавливаюсь: модель просит инструменты, которых нет ({names}), "
+                f"а выдумывать действия вместо них я не буду.{done} "
+                "Сформулируй задачу иначе или назови действие точнее.")
 
 
 class AIRouter:

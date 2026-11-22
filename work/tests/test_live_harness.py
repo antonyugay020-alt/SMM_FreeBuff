@@ -55,6 +55,9 @@ def answer(system, user):
     return "ок"
 
 
+AGENT_FORMATS = []
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
@@ -77,6 +80,8 @@ class Handler(BaseHTTPRequestHandler):
             messages = payload.get("messages") or [{}, {}]
             system = str((messages[0] or {}).get("content") or "")
             user = str((messages[1] or {}).get("content") or "")
+            if "AI SMM Manager" in system:
+                AGENT_FORMATS.append(payload.get("format"))
         except Exception:
             self.reply({"message": {"content": "ок"}})
             return
@@ -105,6 +110,8 @@ check("прошёл все четыре задачи", out.count("шаги:") ==
 check("в первой задаче было два шага", "create_content_plan, write_captions" in out)
 check("подписи появились", "есть подписи у постов" in out and "FAIL" not in out.split("есть подписи")[1][:8])
 check("итог: провалов 0", "провалов: 0" in out)
+check("шаг агента идёт в Ollama с format=json",
+      bool(AGENT_FORMATS) and all(one == "json" for one in AGENT_FORMATS), AGENT_FORMATS)
 
 print("\nLIVE_HARNESS_DONE")
 raise SystemExit(1 if fails else 0)

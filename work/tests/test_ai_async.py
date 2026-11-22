@@ -93,9 +93,21 @@ panel._send_text("упади")
 ok("ошибка видна в чате", wait_for(panel, "Ошибка ядра AI: бум"))
 ok("после ошибки прогресс убран", wait_gone(panel, "⏳ Думаю"))
 
+class Dead:
+    """Модели нет: результат не должен зависеть от того, запущена ли Ollama на машине."""
+
+    name = "stub"
+
+    def available(self):
+        return False
+
+    def chat(self, *args, **kwargs):
+        raise AssertionError("без модели никто не должен спрашивать модель")
+
+
 # --- без модели объясняем причину, а не молчим ---
 dm = DataManager("async_test", tempfile.mkdtemp(prefix="ai_async_"))
-quiet = AICore(dm, None)
+quiet = AICore(dm, None, providers=(Dead(), None))
 reply = quiet.handle("сделай что-нибудь непонятное")
 ok("без модели названа причина", "не подключена" in reply.text, reply.text)
 ok("ответ не пустой", bool(reply.text.strip()))

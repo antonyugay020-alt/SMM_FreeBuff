@@ -23,13 +23,15 @@ class Stage:
     def __init__(self, script):
         self.script = list(script)
         self.calls = []
+        self.formats = []
         self.agent_calls = 0
 
     def available(self):
         return True
 
-    def chat(self, system, user, temperature=0.2, max_tokens=2048):
+    def chat(self, system, user, temperature=0.2, max_tokens=2048, fmt=""):
         self.calls.append(user)
+        self.formats.append(fmt)
         low = user.lower()
         if "AI SMM Manager" in system:
             self.agent_calls += 1
@@ -53,9 +55,21 @@ class Stage:
         return LLMResult(text=text, provider=self.name, model="stub")
 
 
+class Dead:
+    """Провайдер, которого нет: поведение без модели не зависит от машины."""
+
+    name = "stub"
+
+    def available(self):
+        return False
+
+    def chat(self, *args, **kwargs):
+        raise AssertionError("без модели никто не должен спрашивать модель")
+
+
 def build(script, providers=True):
     dm = DataManager("agent", tempfile.mkdtemp(prefix="agent_"))
-    stub = Stage(script) if providers else None
+    stub = Stage(script) if providers else Dead()
     core = AICore(dm, {"monthly_budget_usd": 0},
                   app_db_path=Path(tempfile.mkdtemp(prefix="agent_db_")) / "app.db",
                   providers=(stub, None))
@@ -87,6 +101,7 @@ ok("шаги в журнале", {"create_strategy", "create_content_plan", "wri
    tools)
 ok("итог сказан пользователю", "Готово" in reply.text, reply.text)
 ok("действия можно отменить", len(reply.actions or []) >= 3, len(reply.actions or []))
+ok("шаг агента просит JSON у модели", "json" in stub.formats, stub.formats)
 
 # --- публикацию агент не трогает ---
 dm, core, stub = build([
@@ -161,5 +176,37 @@ dm, core, stub = build([
     "План создан, больше ничего не нужно."])
 reply = core.handle("нужен контент")
 ok("проза после шага — ответ", "План создан" in reply.text, reply.text)
+
+# --- выдуманный инструмент не превращается в «готово» ---
+dm, core, stub = build([
+    '{"action": "tool", "tool": "create_week_plan", "args": {"days": 7}, "say": "Готово."}',
+    '{"action": "tool", "tool": "create_content_plan", "args": {"count": 2}}',
+    '{"action": "done", "say": "План на неделю готов."}'])
+reply = core.handle("подготовь контент на неделю")
+ok("выдуманный инструмент не закрыл задачу", len(dm.get_content_plan()) == 2,
+   len(dm.get_content_plan()))
+ok("модели сказано, что инструмента нет",
+   any("такого инструмента нет" in text for text in stub.calls), stub.calls[-1][-300:])
+ok("итог — настоящий, а не отписка модели", "План на неделю готов" in reply.text, reply.text)
+
+# --- повтор выдуманного инструмента — остановка с причиной, а не «готово» ---
+dm, core, stub = build(['{"action": "tool", "tool": "make_magic", "say": "Готово."}'] * 3)
+reply = core.handle("сделай красиво")
+ok("два выдуманных инструмента — честная причина",
+   "которых нет" in reply.text and "make_magic" in reply.text, reply.text)
+ok("на выдумке ничего не создано", not dm.get_content_plan(), dm.get_content_plan())
+ok("выдумка не попала в журнал",
+   all(entry["tool"] != "make_magic" for entry in core.journal.list(10)),
+   [entry["tool"] for entry in core.journal.list(10)])
+
+# --- action=tool без имени инструмента — не «готово» ---
+dm, core, stub = build([
+    '{"action": "tool", "args": {"count": 1}, "say": "Готово."}',
+    '{"action": "tool", "tool": "create_content_plan", "args": {"count": 1}}',
+    '{"action": "done", "say": "Готово: 1 пост."}'])
+reply = core.handle("нужен пост")
+ok("шаг без имени инструмента не закрыл задачу", len(dm.get_content_plan()) == 1,
+   len(dm.get_content_plan()))
+ok("итог после настоящего шага", "1 пост" in reply.text, reply.text)
 
 print("AGENT_DONE")
