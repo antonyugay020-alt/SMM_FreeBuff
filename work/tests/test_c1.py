@@ -9,6 +9,9 @@ ROOT = APP
 sys.path.insert(0, str(APP))
 from data_manager import DataManager
 from ai_core import AICore, MEDIA_IMAGES
+
+from _cleanup import cleanup_media
+cleanup_media("c1_clip*")   # не оставлять файлы в media приложения
 import video_processor
 
 def ok(name, cond, extra=""):

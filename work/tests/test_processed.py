@@ -10,6 +10,9 @@ sys.path.insert(0, str(APP))
 from data_manager import DataManager
 from ai_core import AICore, MEDIA_IMAGES
 
+from _cleanup import cleanup_media
+cleanup_media("proc_clip*")   # не оставлять файлы в media приложения
+
 def ok(name, cond, extra=""):
     print(("PROC_OK " if cond else "PROC_FAIL ") + name + ("" if cond else f" :: {extra}"))
     if not cond:

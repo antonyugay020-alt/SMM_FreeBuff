@@ -15,6 +15,9 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from data_manager import DataManager
 from ai_core import AICore
 
+from _cleanup import cleanup_media
+cleanup_media("wide*")   # не оставлять файлы в media приложения
+
 app = QApplication.instance() or QApplication(sys.argv)
 
 WORK = Path(tempfile.mkdtemp(prefix="step6_"))

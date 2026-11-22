@@ -18,6 +18,9 @@ img.fill(QColor("#2dd4bf")); img.save(src)
 from data_manager import DataManager
 from ai_core import AICore
 
+from _cleanup import cleanup_media
+cleanup_media("sample_pub*")   # не оставлять файлы в media приложения
+
 shutil.rmtree(str(WORK / "prev_test_data"), ignore_errors=True)
 dm = DataManager("prev_test", data_dir=str(WORK / "prev_test_data"))
 core = AICore(dm, None, app_db_path=str(WORK / "prev_test_app.db"))

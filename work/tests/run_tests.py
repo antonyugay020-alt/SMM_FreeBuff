@@ -26,22 +26,25 @@ PUBLISH_TESTS = {
 }
 
 
-def _venv_python() -> Path:
-    """Где лежит Python приложения: Windows и POSIX раскладывают venv по-разному."""
-    if os.name == "nt":
-        return APP / ".venv" / "Scripts" / "python.exe"
-    return APP / ".venv" / "bin" / "python"
+def _app_python() -> Path | None:
+    """Python с зависимостями приложения, если он есть: START.bat ждёт venv в корне, не в app."""
+    candidates = [ROOT / "venv" / "Scripts" / "python.exe", ROOT / "venv" / "bin" / "python",
+                  APP / ".venv" / "Scripts" / "python.exe", APP / ".venv" / "bin" / "python"]
+    return next((path for path in candidates if path.is_file()), None)
 
 
 SCRIPT = (HERE / "run_tests.py").relative_to(ROOT)
 
-HINT = (
-    "Не хватает пакета cryptography — он нужен приложению, а не тестам.\n"
-    "  Запустить тем же Python, что у приложения (venv):\n"
-    f"    {_venv_python()} {SCRIPT}\n"
-    "  Или один раз поставить зависимости в свой Python:\n"
-    f"    pip install -r {APP / 'requirements.txt'}\n"
-)
+
+def hint() -> str:
+    """Что делать без cryptography: сначала существующий venv, иначе установка зависимостей."""
+    python = _app_python()
+    lines = ["Не хватает пакета cryptography — он нужен приложению, а не тестам."]
+    if python:
+        lines += ["  Запустить тем же Python, что у приложения:", f"    {python} {SCRIPT}"]
+    lines += ["  Поставить зависимости в свой Python:",
+              f"    pip install -r {APP / 'requirements.txt'}"]
+    return "\n".join(lines) + "\n"
 
 
 def _stdout_encoding() -> str:
@@ -66,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Не нашёл тестов рядом: {HERE}")
         return 2
     if importlib.util.find_spec("cryptography") is None:
-        print(HINT)
+        print(hint())
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
     env.setdefault("PYTHONIOENCODING", f"{_stdout_encoding()}:replace")
     fails: list[str] = []
