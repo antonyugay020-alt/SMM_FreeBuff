@@ -875,4 +875,31 @@ GUI:
 - D2: хостинг одного файла на Cloudinary, короткий заход на Muse Ember.
 - Открытое: App Review/Advanced Access — действие пользователя в кабинете Meta.
 
+Следующая модель: Muse Ember (D3 — короткий заход).
+
+### Сессия 30 — 22.11.2026 — модель: Muse Ember — шаг D, D2 (хостинг одного файла)
+
+Сделано:
+- `cloudinary_client.py`: `CloudinaryClient.from_env()` (только env, без SDK), `upload()` с подписью SHA-1,
+  `delete()`; `resource_type_for()` по расширению (image/video/raw). Секреты не логируются, ошибки — без ключей.
+- `storage.py`: `media.remote_url`, `media.remote_public_id` (схема, `_ensure_columns`, save/load).
+- `ai_core.py`: `AITools.host_media(media_id)` — загрузка, запись URL в запись, отметка `hosted` в `processed`,
+  журнал; откат `restore_sections` + `_drop_remote()` удаляет файл с хостинга и честно сообщает, если не вышло.
+  Клиент подставляется (`tools.cloudinary`) — тест ставит Fake, живой режим берёт env.
+- `PROCESSED_LABELS["hosted"] = «Ссылка»` — карточка показывает, что материал уже выложен.
+
+Проверено (headless):
+- `/tmp/d2_test.py` (`D2_OK`, 15 пунктов): URL и `public_id` пишутся в запись, одна загрузка, журнал,
+  URL переживает перезапуск, откат удаляет файл на хостинге и стирает URL, ошибка Cloudinary без журнала,
+  отказ без ключей, неизвестный материал, отсутствующий файл, `resource_type` по расширению, нет env → нет клиента.
+- Регресс EXIT=0: `c1`–`c5`, `processed`, `step6`, `step9`–`step13`, `validate_test`, `legacy_val_test`,
+  `smoke_chain`; `compileall` чистый.
+
+Трогались файлы: `cloudinary_client.py` (новый), `ai_core.py`, `storage.py`,
+`gui_sections/publications_section.py`, `work/DECISIONS.md`, `work/PLAN.md`, `work/SESSION_LOG.md`.
+
+Осталось / следующий шаг:
+- D3: токен Instagram (шифрованное хранение) и read-only проверка доступа без публикации.
+- Живая проверка D2: загрузка настоящего файла с ключами Cloudinary на машине пользователя.
+
 Следующая модель: Muse Ember.

@@ -392,6 +392,7 @@ class AITools:
         self.dm = dm
         self.router = router_ref
         self.video = None  # VideoProcessor создаётся при первом обращении (тесты подставляют свой)
+        self.cloudinary = None  # клиент хостинга для D2; без него — из переменных окружения
 
     # --- helpers ---
     def _bump_version(self, note: str, author: str = "AI") -> None:
@@ -1172,7 +1173,51 @@ class AITools:
                 "effect": {"path": str(folder)},
                 "undo": {"op": "delete_folder", "path": str(folder)}}
 
-    # --- Instagram: пакет для ручной загрузки ---
+    # --- Instagram: хостинг медиа (шаг D2) ---
+    @staticmethod
+    def _cloudinary(source: Optional[Any] = None):
+        """Клиент Cloudinary: подставленный объект или из переменных окружения."""
+        if source is not None:
+            return source
+        import cloudinary_client
+
+        return cloudinary_client.CloudinaryClient.from_env()
+
+    def host_media(self, media_id: str = "") -> Dict[str, Any]:
+        """Выложить готовый материал на публичный URL: без него Graph API не публикует."""
+        found = self._media_records([media_id])
+        if not found:
+            return {"summary": f"Материал {media_id or '—'} не найден",
+                    "effect": {}, "undo": {}}
+        client = self._cloudinary(self.cloudinary)
+        if client is None:
+            return {"summary": "Нужны CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY и "
+                                "CLOUDINARY_API_SECRET — без них медиа некуда выложить",
+                    "effect": {}, "undo": {}}
+        zone, record = found[0][1], found[0][2]
+        path = Path(str(record.get("path") or ""))
+        if not path.is_file():
+            return {"summary": f"{record.get('name')}: файл не найден",
+                    "effect": {}, "undo": {}}
+
+        public_id = f"smm/{datetime.now():%Y%m%d%H%M%S}_{self._slug(path.stem)}"
+        try:
+            hosted = client.upload(str(path), public_id)
+        except Exception as exc:
+            return {"summary": f"Cloudinary не принял файл: {exc}", "effect": {}, "undo": {}}
+
+        before = copy.deepcopy(self.dm._data.get(zone, []))
+        record["remote_url"] = hosted["url"]
+        record["remote_public_id"] = hosted["public_id"]
+        self._remember(record, "hosted")
+        self.dm.save()
+        return {"summary": f"Выложил {record.get('name')} на публичный URL",
+                "effect": {"id": media_id, "url": hosted["url"],
+                           "resource_type": hosted.get("resource_type", "")},
+                "undo": {"op": "restore_sections", "sections": {zone: before},
+                         "remote": {"public_id": hosted["public_id"],
+                                    "resource_type": hosted.get("resource_type", "image")}}}
+
     @staticmethod
     def _slug(text: str, fallback: str = "материал", limit: int = 40) -> str:
         """Имя файла из темы или имени: без пробелов и лишних знаков."""
@@ -1373,6 +1418,9 @@ class AITools:
             for name in spec.get("files") or []:
                 Path(name).unlink(missing_ok=True)
             self.dm.save()
+            removed = self._drop_remote(spec.get("remote"))
+            if removed:
+                return f"Откатил «{action.get('tool')}» — {removed}"
             return f"Откатил «{action.get('tool')}»"
         if op == "delete_file":
             path = Path(spec.get("path", ""))
@@ -1385,6 +1433,17 @@ class AITools:
         if op == "noop":
             return f"«{action.get('tool')}» данные не менял — откатывать нечего"
         return "У этой записи нет обратной операции"
+
+    def _drop_remote(self, spec: Optional[Dict[str, Any]]) -> str:
+        """Убрать файл с хостинга при откате: без клиента говорим честно, что остался."""
+        if not spec or not spec.get("public_id"):
+            return ""
+        client = self._cloudinary(self.cloudinary)
+        if client is None:
+            return f"файл на хостинге остался ({spec['public_id']}): нет ключей Cloudinary"
+        if client.delete(str(spec["public_id"]), str(spec.get("resource_type") or "image")):
+            return "файл с хостинга удалён"
+        return f"хостинг не подтвердил удаление {spec['public_id']} — уберите вручную"
 
 
 # === Router: rules → local → cloud → editor ===
@@ -1763,6 +1822,9 @@ class AICore:
                                          "paths": list},
                                         self.tools.make_subtitles,
                                         needs_confirmation=lambda a: len(a.get("media_ids") or []) > 3))
+        self.registry.register(ToolSpec("host_media",
+                                        "выложить материал на публичный URL для публикации",
+                                        {"media_id": str}, self.tools.host_media))
         self.registry.register(ToolSpec("instagram_pack",
                                         "пакет под Instagram: файлы, подписи, замечания",
                                         {"dest": str}, self.tools.instagram_pack))

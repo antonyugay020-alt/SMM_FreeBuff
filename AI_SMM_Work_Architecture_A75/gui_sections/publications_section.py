@@ -58,7 +58,8 @@ PHOTO_PRESETS = (("Кадрировать 4:5 + цвет + сжатие", ["crop
 PROCESSED_LABELS = {"instagram_reels": "🎬 Reels", "instagram_post": "🎬 Post",
                     "tiktok": "🎬 TikTok", "youtube_shorts": "🎬 Shorts",
                     "youtube_video": "🎬 YouTube", "subtitles": "💬 Субтитры",
-                    "crop": "Кадр", "color": "Цвет", "compress": "Сжатие"}
+                    "crop": "Кадр", "color": "Цвет", "compress": "Сжатие",
+                    "hosted": "Ссылка"}
 
 
 def _processed_marks(item: Dict[str, Any]) -> List[str]:

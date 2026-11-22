@@ -139,7 +139,9 @@ CREATE TABLE IF NOT EXISTS media (
     shooting_task_id TEXT,
     created_at       TEXT,
     source_path      TEXT,
-    processed        TEXT
+    processed        TEXT,
+    remote_url       TEXT,
+    remote_public_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS publication_folders (
@@ -385,7 +387,8 @@ class ProjectStore:
     def _ensure_columns(self) -> None:
         """Add columns introduced after the first projects were created."""
         added = {"content_plan": {"caption": "TEXT"}, "other_files": {"path": "TEXT"},
-                 "media": {"source_path": "TEXT", "processed": "TEXT"}}
+                 "media": {"source_path": "TEXT", "processed": "TEXT",
+                           "remote_url": "TEXT", "remote_public_id": "TEXT"}}
         for table, columns in added.items():
             have = {row["name"] for row in
                     self.conn.execute(f"PRAGMA table_info({table})")}
@@ -532,11 +535,13 @@ class ProjectStore:
                         item.get("shooting_task") or item.get("shooting_task_id"),
                         _iso(item.get("date")), item.get("source_path"),
                         _json_or_none(item.get("processed") or None),
+                        item.get("remote_url"), item.get("remote_public_id"),
                     ))
             conn.executemany(
                 "INSERT INTO media(id, zone, name, kind, category, width, height, bytes, path,"
-                " status, shooting_task_id, created_at, source_path, processed)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " status, shooting_task_id, created_at, source_path, processed,"
+                " remote_url, remote_public_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 media_rows)
 
             folders = publications.get("folders", {}) or {}
@@ -661,7 +666,9 @@ class ProjectStore:
             base = {"id": row["id"], "name": row["name"], "type": row["kind"],
                     "size": _wh_to_size(row["width"], row["height"]),
                     "path": row["path"] or "", "source_path": row["source_path"] or "",
-                    "processed": _loads(row["processed"], []) or []}
+                    "processed": _loads(row["processed"], []) or [],
+                    "remote_url": row["remote_url"] or "",
+                    "remote_public_id": row["remote_public_id"] or ""}
             if row["zone"] == "sources":
                 base["date"] = _display(row["created_at"])
                 base["shooting_task"] = row["shooting_task_id"]
