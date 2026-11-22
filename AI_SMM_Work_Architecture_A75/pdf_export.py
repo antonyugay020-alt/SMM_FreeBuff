@@ -52,8 +52,9 @@ def _font_or_raise() -> str:
     return font
 
 
-_FONT_ERROR = ("Не найден системный шрифт с поддержкой кириллицы "
-               "(Arial / Tahoma / DejaVu). Укажи путь в FONT_CANDIDATES.")
+_FONT_ERROR = ("Не найден шрифт с поддержкой кириллицы. Положите DejaVuSans.ttf в папку "
+               "AI_SMM_Work_Architecture_A75/assets/ рядом с pdf_export.py "
+               "или укажите путь к TTF первым в FONT_CANDIDATES.")
 _LIB_ERROR = "Для экспорта PDF нужна библиотека. Установи:\n\n    pip install fpdf2"
 
 
@@ -71,7 +72,8 @@ def check_dependencies() -> str:
     if font:
         lines.append(f"[OK] Шрифт для кириллицы: {Path(font).name}")
     else:
-        lines.append("[!] Системный шрифт с кириллицей не найден")
+        lines.append("[!] Шрифт с кириллицей не найден")
+        lines.append("    Положите DejaVuSans.ttf в папку assets/ рядом с pdf_export.py")
     return "\n".join(lines)
 
 

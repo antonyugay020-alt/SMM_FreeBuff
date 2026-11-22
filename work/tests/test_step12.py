@@ -16,15 +16,9 @@ def ok(name, cond, extra=""):
     if not cond:
         raise SystemExit(1)
 
-FONT = next((p for p in (
-    "/opt/freestyle/python/lib/python3.12/site-packages/matplotlib/mpl-data/fonts/ttf/DejaVuSans.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "C:/Windows/Fonts/arial.ttf",
-    "/System/Library/Fonts/Supplemental/Arial.ttf",
-) if Path(p).is_file()), None)
-if FONT and FONT not in pdf_export.FONT_CANDIDATES:
-    pdf_export.FONT_CANDIDATES.insert(0, FONT)
 ORIGINAL_FONTS = list(pdf_export.FONT_CANDIDATES)
+ok("шрифт в репозитории найден", bool(pdf_export._find_font()),
+   pdf_export.FONT_CANDIDATES)
 
 tmp = tempfile.mkdtemp(prefix="step12_")
 dm = DataManager("t12", tmp)
