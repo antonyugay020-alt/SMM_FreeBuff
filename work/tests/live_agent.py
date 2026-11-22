@@ -101,16 +101,25 @@ check("проверка плана ответила", "роверка" in reply2
 
 # --- 3. ещё одна свободная формулировка ---
 print('\n3. «нужно 5 постов для инстаграма»')
+ids_before3 = {item.get("id") for item in dm.get_content_plan()}
 reply3, took3, tools3 = run_task("нужно 5 постов для инстаграма")
+fresh3 = [item for item in dm.get_content_plan() if item.get("id") not in ids_before3]
 check("постов стало больше", len(dm.get_content_plan()) > plan_count,
       f"{plan_count} → {len(dm.get_content_plan())}")
+check("правило добавило пять позиций", len(fresh3) == 5, len(fresh3))
+check("у новых постов есть подписи",
+      bool(fresh3) and all(str(item.get("caption") or "").strip() for item in fresh3),
+      sum(1 for item in fresh3 if str(item.get("caption") or "").strip()))
+check("у новых постов есть ТЗ",
+      bool(fresh3) and all(item.get("shooting_task_id") for item in fresh3),
+      sum(1 for item in fresh3 if item.get("shooting_task_id")))
 
 # --- 4. вопрос по состоянию: не должно быть падения ---
 print('\n4. «что сейчас в плане?»')
 reply4, took4, tools4 = run_task("что сейчас в плане?")
 check("ответ на вопрос не пустой", bool(reply4.text.strip()), reply4.text[:160])
 
-print(f"\nживых тестов: {4 + 5}, провалов: {len(fails)}")
+print(f"\nживых тестов: {4 + 8}, провалов: {len(fails)}")
 if fails:
     print("провалились: " + ", ".join(fails))
 raise SystemExit(1 if fails else 0)

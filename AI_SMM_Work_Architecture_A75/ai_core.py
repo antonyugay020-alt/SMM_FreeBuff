@@ -2104,11 +2104,12 @@ class AIAgent:
     def _finish_after_plan(self, gaps: List[tuple], actions: List[Dict[str, Any]],
                            say: str, note: str = "") -> str:
         """Доделать подписи и ТЗ только у новых позиций задачи, старые не переписываем."""
-        made = []
+        made: List[str] = []
         for tool, plan_id in gaps:
             reply = self.core._execute(tool, {"plan_id": plan_id}, "agent")
             actions.extend(reply.actions or [])
-            made.append(tool)
+            if reply.actions and tool not in made:
+                made.append(tool)
         touched = list(dict.fromkeys(plan_id for _, plan_id in gaps))
         plan = {str(item.get("id")): item for item in self.core.dm.get_content_plan()}
         fresh = [plan[one] for one in touched if one in plan]
@@ -2116,10 +2117,13 @@ class AIAgent:
         tasks = sum(1 for item in fresh if item.get("shooting_task_id"))
         lead = " ".join(part for part in (note, say) if part).strip()
         tail = f"Из {len(touched)} новых позиций: с подписью {captions}, с ТЗ {tasks}."
-        if made and not self._plan_gaps(touched):
-            tail += f" Довёл до конца сам: {self._gap_tool_list(gaps)}."
+        left = self._plan_gaps(touched)
+        if made and not left:
+            tail += f" Довёл до конца сам: {', '.join(made)}."
         elif made:
-            tail += f" Дописал сам: {self._gap_tool_list(gaps)}, остальное надо доделать вручную."
+            tail += f" Дописал сам: {', '.join(made)}; остальное надо доделать вручную."
+        elif left:
+            tail += " Дописать не смог: нужна модель или ручная правка."
         return f"{lead} {tail}".strip()
 
     @staticmethod
@@ -2167,6 +2171,12 @@ class AIRouter:
             count = _first_int(low) or 5
             return RouteDecision("create_content_plan",
                                  {"count": count, "period_days": _period_days(low)}, "rules")
+        cycle = re.search(r"(?:нужн\w*|надо|хочу|хотел\w*|сделай|создай|подготовь|добавь|дай)"
+                          r".{0,25}?\b(\d{1,3})\s*(?:пост|публикац|позиц)", low)
+        if cycle:
+            return RouteDecision("create_post_cycle",
+                                 {"count": int(cycle.group(1)),
+                                  "period_days": _period_days(low)}, "rules")
         if re.search(r"(создай|сделай).{0,15}(тз|задание на съемку)", low):
             plan_id = self._latest_plan_without_task()
             if not plan_id:
@@ -2755,6 +2765,9 @@ class AICore:
             return self._journal_reply()
         if decision.tool == "brand_profile_interview":
             return self._start_interview()
+        if decision.tool == "create_post_cycle":
+            return self._posts_cycle(int(decision.args.get("count") or 5),
+                                     int(decision.args.get("period_days") or 7))
         if not decision.tool:
             return AIReply(decision.clarify or "Уточните задачу.", decision.layer)
 
@@ -2779,6 +2792,26 @@ class AICore:
             agent = AIAgent(self)
             self._agent_instance = agent
         return agent
+
+    def _posts_cycle(self, count: int, period_days: int = 7) -> AIReply:
+        """Правило «нужно N постов»: позиции плана сразу с подписями и ТЗ."""
+        count = max(1, min(int(count or 5), 60))
+        before = {str(item.get("id")) for item in self.dm.get_content_plan()}
+        reply = self._execute("create_content_plan",
+                              {"count": count, "period_days": period_days}, "rules")
+        new_ids = [str(item.get("id")) for item in self.dm.get_content_plan()
+                   if str(item.get("id")) not in before]
+        if not new_ids:
+            return reply
+        agent = self._agent()
+        gaps = agent._plan_gaps(new_ids)
+        if not gaps:
+            return reply
+        actions = list(reply.actions or [])
+        # берём только сводку инструмента, без строки «Журнал: …»
+        lead = ((reply.text or "").strip().splitlines() or [""])[0].strip()
+        lead = lead.rstrip(".") + "." if lead else ""
+        return AIReply(agent._finish_after_plan(gaps, actions, lead), "rules", actions)
 
     def _execute(self, tool: str, args: Dict[str, Any], layer: str) -> AIReply:
         spec = self.registry.get(tool)

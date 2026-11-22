@@ -288,6 +288,23 @@ ok("новые посты с ТЗ",
 ok("итог говорит только о новых позициях",
    f"Из {len(new_items)} новых позиций" in reply.text, reply.text)
 
+# --- правило: «нужно N постов» делает позиции сразу с подписями и ТЗ ---
+dm, core, stub = build([])
+reply = core.handle("нужно 5 постов для инстаграма")
+plan = dm.get_content_plan()
+ok("правило создало пять позиций", len(plan) == 5, len(plan))
+ok("правило написало подписи",
+   plan and all(str(item.get("caption") or "").strip() for item in plan),
+   [(item.get("topic"), item.get("caption")) for item in plan])
+ok("правило создало ТЗ", plan and all(item.get("shooting_task_id") for item in plan),
+   [(item.get("topic"), item.get("shooting_task_id")) for item in plan])
+ok("итог правила — про новые позиции", "Из 5 новых позиций" in reply.text, reply.text)
+ok("правило не спросило модель про шаги", stub.agent_calls == 0, stub.agent_calls)
+ok("в журнале план, подписи и ТЗ",
+   {"create_content_plan", "write_captions", "create_shooting_task"}
+   <= {entry["tool"] for entry in core.journal.list(50)},
+   [entry["tool"] for entry in core.journal.list(50)])
+
 # --- стратегия из строк, а не словарей, не роняет инструмент ---
 dm, core, stub = build([
     '{"action": "tool", "tool": "create_strategy", "args": {"sections": '
