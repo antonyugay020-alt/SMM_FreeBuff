@@ -1251,6 +1251,68 @@ class AITools:
                          "remote": {"public_id": hosted["public_id"],
                                     "resource_type": hosted.get("resource_type", "image")}}}
 
+    def instagram_publish(self, media_id: str = "", dry_run: str = "1", again: str = "") -> Dict[str, Any]:
+        """Опубликовать выложенный материал в Instagram. По умолчанию — только проверка, без публикации."""
+        import instagram_auth
+
+        found = self._media_records([media_id])
+        if not found:
+            return {"summary": f"Материал {media_id or '—'} не найден", "effect": {}, "undo": {}}
+        _, zone, record = found[0]
+        url = str(record.get("remote_url") or "")
+        name = record.get("name") or media_id
+        if not url:
+            return {"summary": f"{name}: сначала выложите на публичный URL (host_media)",
+                    "effect": {}, "undo": {}}
+        if record.get("published_id") and str(again).lower() not in ("1", "true", "да"):
+            return {"summary": f"{name} уже опубликован (id {record['published_id']}) — "
+                                "повторно только по вашему подтверждению",
+                    "effect": {}, "undo": {}}
+        try:
+            token = self._token_store().load_token()
+        except instagram_auth.TokenError as exc:
+            return {"summary": str(exc), "effect": {}, "undo": {}}
+        if not token:
+            return {"summary": "Токен Instagram не сохранён — впишите в «Настройках»",
+                    "effect": {}, "undo": {}}
+        access = instagram_auth.check_access(token)
+        if not access.get("ok"):
+            return {"summary": "Доступ не готов: " + str(access.get("reason") or "неизвестно"),
+                    "effect": {}, "undo": {}}
+        ig_user = access["ig_user_id"]
+        try:
+            left = instagram_auth.publishing_limit(token, ig_user)
+        except instagram_auth.PublishError as exc:
+            return {"summary": f"Не смог проверить лимит: {exc}", "effect": {}, "undo": {}}
+        if left["left"] <= 0:
+            return {"summary": f"Лимит публикаций исчерпан ({left['used']} из {left['total']} за 24 ч)",
+                    "effect": {}, "undo": {}}
+        is_video = Path(str(record.get("path") or "")).suffix.lower() in VIDEO_SUFFIXES
+        media_type = "REELS" if is_video else "IMAGE"
+        caption = str(record.get("caption") or "").strip()
+        preview = (f"{name}: @{access['username'] or ig_user}, {media_type}, "
+                   f"осталось публикаций {left['left']} из {left['total']}")
+        if str(dry_run).lower() not in ("0", "false", "нет"):
+            return {"summary": "Проверка прошла, публикация не запущена: " + preview,
+                    "effect": {"dry_run": True, "url": url, "caption_chars": len(caption)},
+                    "undo": {}}
+        try:
+            container = instagram_auth.create_container(
+                token, ig_user, {"url": url, "is_video": is_video, "media_type": media_type})
+            instagram_auth.wait_container(token, container)
+            published = instagram_auth.media_publish(token, ig_user, container)
+        except instagram_auth.PublishError as exc:
+            return {"summary": f"Instagram не опубликовал {name}: {exc}", "effect": {}, "undo": {}}
+
+        before = copy.deepcopy(self.dm._data.get(zone, []))
+        record["published_id"] = published
+        self._remember(record, "published")
+        self.dm.save()
+        return {"summary": f"Опубликовал {name} в Instagram (id {published}). "
+                            "Пост в Instagram API не удаляется — откат только локальный",
+                "effect": {"id": media_id, "published_id": published},
+                "undo": {"op": "restore_sections", "sections": {zone: before}}}
+
     @staticmethod
     def _slug(text: str, fallback: str = "материал", limit: int = 40) -> str:
         """Имя файла из темы или имени: без пробелов и лишних знаков."""
@@ -1864,6 +1926,12 @@ class AICore:
         self.registry.register(ToolSpec("host_media",
                                         "выложить материал на публичный URL для публикации",
                                         {"media_id": str}, self.tools.host_media))
+        self.registry.register(ToolSpec("instagram_publish",
+                                        "опубликовать выложенный материал в Instagram (сначала проверка)",
+                                        {"media_id": str, "dry_run": str, "again": str},
+                                        self.tools.instagram_publish,
+                                        needs_confirmation=lambda a: str(a.get("dry_run", "1")).lower()
+                                        not in ("0", "false", "нет")))
         self.registry.register(ToolSpec("instagram_pack",
                                         "пакет под Instagram: файлы, подписи, замечания",
                                         {"dest": str}, self.tools.instagram_pack))

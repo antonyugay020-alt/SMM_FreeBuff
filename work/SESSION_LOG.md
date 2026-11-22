@@ -939,3 +939,9 @@ GUI:
 - Открытое: App Review/Advanced Access в кабинете Meta.
 
 Следующая модель: Claude Haiku 4.5 (D4 — необратимое действие; Muse Spark недоступна).
+
+## 22.11.2026 — D4 (публикация в Instagram)
+- Код: `instagram_auth.py` (контейнер, ожидание FINISHED, `media_publish`, лимит 50/24ч), `ai_core.py` (`instagram_publish`, dry-run по умолчанию, подтверждение, журнал, откат).
+- Проверки: d4 16/16 OK (dry-run без POST, публикация, дубль, лимит, ошибка без утечки токена, откат через `core.undo`); d3 26/26; d2, c1–c5, processed, step6, validate, smoke_chain — exit 0; compileall без `.venv` — exit 0.
+- Не проверено: живая публикация и Graph API (нет токена и сети), App Review/Advanced Access.
+- Следующая модель: Claude Haiku 4.5 для следующего шага, если он появится.

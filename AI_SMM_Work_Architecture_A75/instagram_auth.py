@@ -172,3 +172,96 @@ def check_access(token: str, http: Any = requests) -> Dict[str, Any]:
                             + ": нужен Business или Creator, сейчас "
                             + (account_type or "неизвестно"))
     return result
+
+
+# --- Публикация (шаг D4): контейнер → media_publish. Все вызовы сети идут через `http`. ---
+
+PUBLISH_TIMEOUT_SEC = 60
+PUBLISH_POLL_SEC = 5
+
+
+class PublishError(RuntimeError):
+    """Graph API отказал или не дождался готовности контейнера."""
+
+
+def _graph_error(response: Any, token: str) -> str:
+    try:
+        body = response.json() or {}
+    except ValueError:
+        body = {}
+    error = body.get("error") or {}
+    return _scrub(str(error.get("message") or f"Graph API ответил {getattr(response, 'status_code', '?')}"),
+                  token)
+
+
+def publishing_limit(token: str, ig_user_id: str, http: Any = requests) -> Dict[str, int]:
+    """Read-only: сколько публикаций осталось в скользящие 24 часа."""
+    try:
+        response = http.get(f"{GRAPH_URL}/{ig_user_id}/content_publishing_limit",
+                            params={"fields": "config,quota_usage", "access_token": token}, timeout=20)
+    except Exception as exc:
+        raise PublishError("сеть недоступна: " + _scrub(str(exc), token))
+    if getattr(response, "status_code", 0) != 200:
+        raise PublishError(_graph_error(response, token))
+    data = (response.json() or {}).get("data") or [{}]
+    usage = int(data[0].get("quota_usage") or 0)
+    total = int((data[0].get("config") or {}).get("quota_total") or 50)
+    return {"used": usage, "total": total, "left": max(total - usage, 0)}
+
+
+def create_container(token: str, ig_user_id: str, media: Dict[str, Any], http: Any = requests) -> str:
+    """POST /{ig-user-id}/media — контейнер публикации; возвращает его id."""
+    payload = {"access_token": token, "media_type": media["media_type"],
+               ("video_url" if media["is_video"] else "image_url"): media["url"]}
+    try:
+        response = http.post(f"{GRAPH_URL}/{ig_user_id}/media", data=payload, timeout=60)
+    except Exception as exc:
+        raise PublishError("сеть недоступна: " + _scrub(str(exc), token))
+    if getattr(response, "status_code", 0) != 200:
+        raise PublishError(_graph_error(response, token))
+    container = str((response.json() or {}).get("id") or "")
+    if not container:
+        raise PublishError("Graph API не вернул id контейнера")
+    return container
+
+
+def wait_container(token: str, container_id: str, http: Any = requests,
+                   timeout: int = PUBLISH_TIMEOUT_SEC, poll: int = PUBLISH_POLL_SEC,
+                   sleep: Any = None) -> None:
+    """Ждём FINISHED; для видео это может занять время. Ограничено по времени."""
+    import time
+
+    sleep = sleep or time.sleep
+    waited = 0
+    while True:
+        try:
+            response = http.get(f"{GRAPH_URL}/{container_id}",
+                                params={"fields": "status_code", "access_token": token}, timeout=20)
+        except Exception as exc:
+            raise PublishError("сеть недоступна: " + _scrub(str(exc), token))
+        if getattr(response, "status_code", 0) != 200:
+            raise PublishError(_graph_error(response, token))
+        status = str((response.json() or {}).get("status_code") or "")
+        if status == "FINISHED":
+            return
+        if status in ("ERROR", "EXPIRED"):
+            raise PublishError(f"контейнер в статусе {status}: загрузите материал заново")
+        if waited >= timeout:
+            raise PublishError("Instagram ещё обрабатывает файл — контейнер не опубликован, повторите позже")
+        sleep(poll)
+        waited += poll
+
+
+def media_publish(token: str, ig_user_id: str, container_id: str, http: Any = requests) -> str:
+    """POST /{ig-user-id}/media_publish — возвращает id опубликованного медиа."""
+    try:
+        response = http.post(f"{GRAPH_URL}/{ig_user_id}/media_publish",
+                             data={"creation_id": container_id, "access_token": token}, timeout=60)
+    except Exception as exc:
+        raise PublishError("сеть недоступна: " + _scrub(str(exc), token))
+    if getattr(response, "status_code", 0) != 200:
+        raise PublishError(_graph_error(response, token))
+    published = str((response.json() or {}).get("id") or "")
+    if not published:
+        raise PublishError("Graph API не вернул id публикации")
+    return published
