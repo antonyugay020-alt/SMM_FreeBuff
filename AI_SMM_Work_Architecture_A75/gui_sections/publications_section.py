@@ -54,6 +54,41 @@ PHOTO_PRESETS = (("Кадрировать 4:5 + цвет + сжатие", ["crop
                  ("Только кадрирование 4:5", ["crop"]),
                  ("Только цвет", ["color"]))
 
+# Подписи операций из `media.processed`
+PROCESSED_LABELS = {"instagram_reels": "🎬 Reels", "instagram_post": "🎬 Post",
+                    "tiktok": "🎬 TikTok", "youtube_shorts": "🎬 Shorts",
+                    "youtube_video": "🎬 YouTube", "subtitles": "💬 Субтитры"}
+
+_PROBE: Optional[Any] = None
+
+
+def _video_duration(path: Path) -> str:
+    """Длительность из ffprobe; без ffmpeg честно говорим, что её не знаем."""
+    global _PROBE
+    try:
+        if _PROBE is None:
+            from video_processor import VideoProcessor
+            _PROBE = VideoProcessor()
+        info = _PROBE.get_video_info(str(path)) if _PROBE.ffmpeg_available else None
+    except Exception:
+        logger.debug("длительность видео не получена", exc_info=True)
+        info = None
+    seconds = int(round((info or {}).get("duration") or 0))
+    if seconds <= 0:
+        return "длительность неизвестна"
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def _file_size(path: Path) -> str:
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return "размер неизвестен"
+    if size >= 1024 * 1024:
+        return f"{size / 1024 / 1024:.1f} МБ"
+    return f"{max(1, size // 1024)} КБ"
+
+
 MONTHS = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
           "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
 WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
@@ -277,6 +312,12 @@ class MediaCard(QFrame):
         size.setStyleSheet(f"color:{MUTED};font-size:9px;padding:1px 7px;")
         lay.addWidget(size)
 
+        marks = [PROCESSED_LABELS.get(key, key) for key in item.get("processed") or []]
+        if marks:
+            done = QLabel(_elide(" · ".join(marks), 124))
+            done.setStyleSheet(f"color:{TEAL};font-size:9px;padding:1px 7px;")
+            lay.addWidget(done)
+
         text, color = STATUS.get(status, ("—", MUTED))
         pill = _pill(text, color)
         pill.setStyleSheet(pill.styleSheet() + "margin:2px 6px 7px 6px;")
@@ -482,6 +523,13 @@ class PreviewPanel(QWidget):
         compare.clicked.connect(self._compare)
         lay.addWidget(compare)
 
+        video_compare = QPushButton("🎬 До / после (видео)")
+        video_compare.setCursor(Qt.PointingHandCursor)
+        video_compare.setStyleSheet("background:#191f27;color:#c9d1d9;border:1px solid #2b3540;"
+                                    "border-radius:7px;padding:6px 10px;font-size:11px;")
+        video_compare.clicked.connect(self._compare_video)
+        lay.addWidget(video_compare)
+
     def show_item(self, item: Dict[str, Any]):
         self.item = item
         self.name.setText(item.get("name", "—"))
@@ -496,6 +544,9 @@ class PreviewPanel(QWidget):
                 w.deleteLater()
         text, color = STATUS.get(item.get("status", "pending"), ("—", MUTED))
         self.badge_row.insertWidget(0, _pill(text, color))
+        for key in item.get("processed") or []:
+            self.badge_row.insertWidget(self.badge_row.count() - 1,
+                                        _pill(PROCESSED_LABELS.get(key, key), TEAL))
         self._render()
 
     def _render(self):
@@ -545,6 +596,24 @@ class PreviewPanel(QWidget):
                 "«Повторить обработку» — после этого сравнивать будет с чем.")
             return
         CompareDialog(source, current, self).exec()
+
+    def _compare_video(self):
+        """«До / после» для видео: исходник и готовый файл рядом, с длительностью."""
+        item = self.item
+        if not item:
+            return
+        if item.get("type") != "video":
+            QMessageBox.information(self, "До / после", "Это сравнение — для видео.")
+            return
+        current = _media_file(item)
+        raw = str(item.get("source_path") or "").strip()
+        source = Path(raw) if raw else None
+        if current is None or source is None or not source.is_file():
+            QMessageBox.information(
+                self, "До / после",
+                "Исходник не сохранён. Подготовь видео — после этого сравнивать будет с чем.")
+            return
+        VideoCompareDialog(source, current, item, self).exec()
 
 
 class CompareDialog(QDialog):
@@ -597,6 +666,67 @@ class CompareDialog(QDialog):
         column.addWidget(image)
 
         info = QLabel(f"{path.name}\n{size}")
+        info.setWordWrap(True)
+        info.setStyleSheet(f"color:{MUTED};font-size:10px;")
+        column.addWidget(info)
+        return column
+
+
+class VideoCompareDialog(QDialog):
+    """Видео до и после: кадры, длительность, размер и выполненные операции."""
+
+    def __init__(self, source: Path, current: Path, item: Dict[str, Any], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Видео: до и после")
+        self.setStyleSheet(f"QDialog{{background:{PANEL_BG};}}")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 14, 14, 14)
+        lay.setSpacing(10)
+
+        title = QLabel("Видео: до и после")
+        title.setStyleSheet(f"color:{TEXT};font-size:14px;font-weight:700;")
+        lay.addWidget(title)
+
+        marks = ", ".join(PROCESSED_LABELS.get(key, key) for key in item.get("processed") or [])
+        hint = QLabel(f"{item.get('name', '')} · {marks or 'не обработано'}")
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color:{MUTED};font-size:10px;")
+        lay.addWidget(hint)
+
+        columns = QHBoxLayout()
+        columns.setSpacing(10)
+        for caption, path, color in (("Исходник", source, MUTED), ("Готовое", current, TEAL)):
+            columns.addLayout(self._column(caption, path, color))
+        lay.addLayout(columns)
+
+        close = QPushButton("Закрыть")
+        close.setCursor(Qt.PointingHandCursor)
+        close.setStyleSheet("background:#191f27;color:#dfe6ee;border:1px solid #2b3540;"
+                            "border-radius:7px;padding:6px 14px;font-size:11px;")
+        close.clicked.connect(self.accept)
+        lay.addWidget(close, 0, Qt.AlignRight)
+
+    @staticmethod
+    def _column(caption: str, path: Path, color: str) -> QVBoxLayout:
+        column = QVBoxLayout()
+        column.setSpacing(6)
+        head = QLabel(caption)
+        head.setStyleSheet(f"color:{color};font-size:11px;font-weight:700;")
+        column.addWidget(head)
+
+        image = QLabel()
+        image.setAlignment(Qt.AlignCenter)
+        image.setFixedSize(300, 300)
+        image.setStyleSheet("background:#0a0e13;border:1px solid #1b222a;"
+                            "border-radius:9px;color:#5c6874;font-size:10px;")
+        pm = _pixmap_for({"path": str(path), "type": "video"})
+        if pm is None:
+            image.setText("Кадр недоступен — нужен ffmpeg")
+        else:
+            image.setPixmap(pm.scaled(296, 296, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        column.addWidget(image)
+
+        info = QLabel(f"{path.name}\n{_file_size(path)} · {_video_duration(path)}")
         info.setWordWrap(True)
         info.setStyleSheet(f"color:{MUTED};font-size:10px;")
         column.addWidget(info)

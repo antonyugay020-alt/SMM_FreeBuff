@@ -727,3 +727,34 @@ GUI:
 - Живая проверка: настоящий Whisper и выгрузка VRAM между LLM и распознаванием.
 
 Следующая модель: DeepSeek V4.1 Flash.
+
+### Сессия 25 — 22.11.2026 — модель: бесплатный тариф Freebuff — ревью C1–C2 + этап C3 (вид для видео)
+
+Сделано:
+- Ревью C1–C2 без изменения поведения: `batch_photo`, `process_video` и `make_subtitles` трижды повторяли
+  построение индекса материалов по трём зонам. Вынесено в `MEDIA_ZONES` + `_media_records(media_ids)`;
+  порядок и повторяющиеся id сохраняются, как раньше. Других дублей нет: `_video_source`, `_video_stem`,
+  `restore_sections`-откат и разбор `num/den` уже общие.
+- C3: в `media` добавлена колонка `processed` (JSON-список) — `process_video` пишет площадку,
+  `make_subtitles` — `subtitles`. Карточка медиатеки и панель просмотра показывают операции
+  (`PROCESSED_LABELS`) рядом со статусом.
+- `VideoCompareDialog` + кнопка «🎬 До / после (видео)»: кадр исходника и готового, имя, размер,
+  длительность через `get_video_info`; без ffmpeg — «длительность неизвестна».
+- `DECISIONS.md` 5.14 (открытые вопросы — 5.15) + две строки в журнале решений; `PLAN.md` — факты ревью и C3.
+
+Проверено (headless, offscreen):
+- `/tmp/c3_test.py` (`C3_OK`): `processed` переживает перезапуск, операция видна в карточке и просмотре,
+  размер `3.0 МБ`, без ffmpeg длительность честная, диалог собирается с обоими файлами, кнопка открывает
+  сравнение с исходником и готовым, для фото — подсказка, без `source_path` — сообщение.
+- Регресс EXIT=0: `c1`, `c2`, `step13`, `step12`, `step11`, `step10`, `step9`, `step6`, `validate_test`,
+  `legacy_val_test`, `smoke_chain`; `compileall` чистый.
+
+Трогались файлы:
+- `ai_core.py`, `storage.py`, `gui_sections/publications_section.py`, `work/DECISIONS.md`,
+  `work/PLAN.md`, `work/SESSION_LOG.md`.
+
+Осталось / следующий шаг:
+- C4: выбор файлов из чата для видео и субтитров, затем Instagram.
+- Живая проверка: ffmpeg/ffprobe на машине пользователя (кадры, длительность), настоящий Whisper.
+
+Следующая модель: DeepSeek V4.1 Flash.

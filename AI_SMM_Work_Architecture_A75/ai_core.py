@@ -318,6 +318,7 @@ VIDEO_TARGETS = {
     "youtube_video": ("YouTube 16:9", "youtube"),
 }
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
+MEDIA_ZONES = ("media_ready", "media_sources", "media_references")
 
 
 def material_kind(path: Path) -> str:
@@ -381,6 +382,13 @@ class AITools:
                          "author": author, "changes": note})
         strategy["version"] = f"1.{number}"
         strategy["updated"] = datetime.now().strftime("%d.%m.%Y")
+
+    def _media_records(self, media_ids: Optional[List[str]]) -> List[Tuple[str, str, Dict[str, Any]]]:
+        """`(id, зона, запись)` только для существующих материалов, в порядке аргумента."""
+        index = {str(record.get("id")): (zone, record) for zone in MEDIA_ZONES
+                 for record in self.dm._data.get(zone, []) if record.get("id")}
+        return [(str(media_id), *index[str(media_id)]) for media_id in (media_ids or [])
+                if str(media_id) in index]
 
     def _section(self, key: str) -> Any:
         return self.dm._data.setdefault(key, [])
@@ -813,11 +821,8 @@ class AITools:
         if not ops:
             return {"summary": "Неизвестные операции: " + ", ".join(operations or []),
                     "effect": {}, "undo": {}}
-        zones = ("media_ready", "media_sources", "media_references")
-        index = {str(record.get("id")): (zone, record) for zone in zones
-                 for record in self.dm._data.get(zone, []) if record.get("id")}
-        ids = [str(media_id) for media_id in (media_ids or []) if str(media_id) in index]
-        if not ids:
+        found = self._media_records(media_ids)
+        if not found:
             return {"summary": "Нечего обрабатывать: материалы не найдены",
                     "effect": {}, "undo": {}}
 
@@ -825,8 +830,7 @@ class AITools:
         done: List[str] = []
         files: List[str] = []
         skipped: List[str] = []
-        for media_id in ids:
-            zone, record = index[media_id]
+        for media_id, zone, record in found:
             try:
                 rendered = self._process_photo(record, ops)
             except (OSError, ValueError) as exc:
@@ -930,11 +934,8 @@ class AITools:
         if target not in VIDEO_TARGETS:
             return {"summary": f"Неизвестная площадка: {platform or '—'}",
                     "effect": {}, "undo": {}}
-        zones = ("media_ready", "media_sources", "media_references")
-        index = {str(record.get("id")): (zone, record) for zone in zones
-                 for record in self.dm._data.get(zone, []) if record.get("id")}
-        ids = [str(media_id) for media_id in (media_ids or []) if str(media_id) in index]
-        if not ids:
+        found = self._media_records(media_ids)
+        if not found:
             return {"summary": "Нечего обрабатывать: материалы не найдены",
                     "effect": {}, "undo": {}}
         processor = self._video_processor()
@@ -947,8 +948,7 @@ class AITools:
         done: List[str] = []
         files: List[str] = []
         skipped: List[str] = []
-        for media_id in ids:
-            zone, record = index[media_id]
+        for media_id, zone, record in found:
             source = self._video_source(record)
             if source is None:
                 skipped.append(f"{record.get('name')}: файл не найден или это не видео")
@@ -1001,11 +1001,8 @@ class AITools:
     def make_subtitles(self, media_ids: Optional[List[str]] = None,
                        language: str = "ru", burn: bool = True) -> Dict[str, Any]:
         """Распознать речь: `.srt` в проект и, если нужно, видео с выжженными субтитрами."""
-        zones = ("media_ready", "media_sources", "media_references")
-        index = {str(record.get("id")): (zone, record) for zone in zones
-                 for record in self.dm._data.get(zone, []) if record.get("id")}
-        ids = [str(media_id) for media_id in (media_ids or []) if str(media_id) in index]
-        if not ids:
+        found = self._media_records(media_ids)
+        if not found:
             return {"summary": "Нечего распознавать: материалы не найдены",
                     "effect": {}, "undo": {}}
         processor = self._video_processor()
@@ -1019,8 +1016,7 @@ class AITools:
         files: List[str] = []
         skipped: List[str] = []
         srt_count = 0
-        for media_id in ids:
-            zone, record = index[media_id]
+        for media_id, zone, record in found:
             source = self._video_source(record)
             if source is None:
                 skipped.append(f"{record.get('name')}: файл не найден или это не видео")
