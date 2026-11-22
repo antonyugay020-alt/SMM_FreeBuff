@@ -731,7 +731,9 @@ class ProjectStore:
 
     def save_brand_profile(self, profile: Dict[str, Any]) -> None:
         fields = self.BRAND_FIELDS
-        values = [profile.get(field, "") or "" for field in fields]
+        current = self.load_brand_profile()
+        values = [(profile[field] if field in profile else current.get(field, "")) or ""
+                  for field in fields]
         placeholders = ", ".join("?" for _ in range(len(fields) + 1))
         with self.conn:
             self.conn.execute(

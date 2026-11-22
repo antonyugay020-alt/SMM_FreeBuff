@@ -699,12 +699,25 @@ class AITools:
                            "avg_er": round(avg_er, 1), "without_metrics": len(missing)},
                 "undo": NOOP_UNDO}
 
+    def _next_plan_date(self) -> datetime:
+        """Новый план продолжается от последней даты в плане, а не начинается сегодня."""
+        dates = []
+        for item in self.dm.get_content_plan():
+            try:
+                dates.append(datetime.strptime(str(item.get("date") or "").strip(), "%d.%m.%Y"))
+            except ValueError:
+                continue
+        today = datetime.now()
+        if not dates:
+            return today
+        return max(max(dates) + timedelta(days=1), today)
+
     def create_content_plan(self, count: int = 5, rubrics: Optional[List[str]] = None,
                             start: Optional[str] = None, period_days: int = 7) -> Dict[str, Any]:
         count = max(1, min(int(count or 5), 60))
         rubrics = [r for r in (rubrics or []) if str(r).strip()] or ["Полезное"]
         try:
-            start_date = datetime.strptime(start, "%d.%m.%Y") if start else datetime.now()
+            start_date = datetime.strptime(start, "%d.%m.%Y") if start else self._next_plan_date()
         except ValueError:
             start_date = datetime.now()
         step = max(1, int(period_days or 7) // count)
@@ -1610,6 +1623,11 @@ class AIRouter:
                                  "rules")
         if re.search(r"проверь.{0,20}(доступ|инстаграм|instagram)|доступ к инстаграм", low):
             return RouteDecision("instagram_status", {}, "rules")
+        if re.search(r"календар", low) and re.search(r"план|позиц|событ|добав|перенес|синхрон|расстав", low):
+            return RouteDecision("sync_plan_events", {}, "rules")
+        if re.search(r"(проверь|проверить|проверка).{0,25}(план|публикац|позиц)"
+                     r"|(план|публикац).{0,20}провер", low):
+            return RouteDecision("validate_plan", {}, "rules")
         if re.search(r"инстаграм|instagram", low) and re.search(r"пакет|публикац|выгруз|собери|подготовь", low):
             return RouteDecision("instagram_pack", {}, "rules")
         if re.search(r"(собери|сделай|подготовь).{0,20}(пакет|выгруз)|экспорт", low):
@@ -1618,7 +1636,9 @@ class AIRouter:
             return RouteDecision("analyze_performance",
                                  {"period_days": _period_days(low)}, "rules")
         if re.search(r"подпись|подписи|caption|хэштег", low):
-            plan_id = self._latest_plan_id()
+            plan_id, problem = self._plan_id_from_text(text)
+            if problem:
+                return RouteDecision("", {}, "rules", 0.4, problem)
             if not plan_id:
                 return RouteDecision("write_captions", {}, "rules", 0.4,
                                      "В плане пока нет позиций — не к чему писать подпись.")
@@ -1756,6 +1776,25 @@ class AIRouter:
     def _latest_plan_id(self) -> str:
         items = self.dm_plan()
         return items[-1]["id"] if items else ""
+
+    def _plan_id_from_text(self, text: str) -> Tuple[str, str]:
+        """Позиция плана из фразы: по дате, по номеру (с 1) или последняя. Возвращает id и текст отказа."""
+        items = self.dm_plan()
+        if not items:
+            return "", ""
+        for item in items:
+            date = str(item.get("date") or "").strip()
+            if date and date in text:
+                return str(item.get("id") or ""), ""
+        low = text.lower()
+        match = (re.search(r"(?:№|номер\s*|пост\s*|позици[яи]\s*)(\d{1,3})", low)
+                 or re.search(r"(\d{1,3})(?:-?[йоге])?\s*(?:пост|позици)", low))
+        if match:
+            number = int(match.group(1))
+            if 1 <= number <= len(items):
+                return str(items[number - 1].get("id") or ""), ""
+            return "", f"В плане {len(items)} позиций — номера {number} нет."
+        return self._latest_plan_id(), ""
 
     def _latest_plan_without_task(self) -> str:
         for item in reversed(self.dm_plan()):
