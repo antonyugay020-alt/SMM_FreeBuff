@@ -327,7 +327,8 @@ class MediaCard(QFrame):
 
         marks = _processed_marks(item)
         if marks:
-            done = QLabel(_elide(" · ".join(marks), 124))
+            done = QLabel(" · ".join(marks))
+            done.setWordWrap(True)
             done.setStyleSheet(f"color:{TEAL};font-size:9px;padding:1px 7px;")
             lay.addWidget(done)
 

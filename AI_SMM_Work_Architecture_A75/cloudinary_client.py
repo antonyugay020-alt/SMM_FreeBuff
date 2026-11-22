@@ -16,6 +16,8 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+CLOUDINARY_ENV_NAMES = ("CLOUDINARY_CLOUD_NAME", "CLOUDINARY_API_KEY", "CLOUDINARY_API_SECRET")
+
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".svg"}
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
 
@@ -45,12 +47,15 @@ class CloudinaryClient:
     @classmethod
     def from_env(cls) -> Optional["CloudinaryClient"]:
         """Клиент из переменных окружения; без них — None (вызывающий объясняет, чего не хватает)."""
-        cloud_name = os.environ.get("CLOUDINARY_CLOUD_NAME", "").strip()
-        api_key = os.environ.get("CLOUDINARY_API_KEY", "").strip()
-        api_secret = os.environ.get("CLOUDINARY_API_SECRET", "").strip()
+        cloud_name, api_key, api_secret = (os.environ.get(name, "").strip() for name in CLOUDINARY_ENV_NAMES)
         if not (cloud_name and api_key and api_secret):
             return None
         return cls(cloud_name, api_key, api_secret)
+
+    @staticmethod
+    def missing_env() -> list:
+        """Имена переменных, которых нет в окружении. Значения не читаются наружу."""
+        return [name for name in CLOUDINARY_ENV_NAMES if not os.environ.get(name, "").strip()]
 
     def _sign(self, params: Dict[str, str]) -> str:
         text = "&".join(f"{key}={params[key]}" for key in sorted(params))

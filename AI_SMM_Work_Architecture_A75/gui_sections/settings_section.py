@@ -191,10 +191,9 @@ class SettingsSection(QWidget):
 
     def _load_cloudinary_state(self):
         """Только наличие переменных окружения: значения не читаем и не показываем."""
-        import os
+        import cloudinary_client
 
-        names = ("CLOUDINARY_CLOUD_NAME", "CLOUDINARY_API_KEY", "CLOUDINARY_API_SECRET")
-        missing = [name for name in names if not os.environ.get(name, "").strip()]
+        missing = cloudinary_client.CloudinaryClient.missing_env()
         if missing:
             self.cloudinary_status.setText("не заданы: " + ", ".join(missing))
         else:
