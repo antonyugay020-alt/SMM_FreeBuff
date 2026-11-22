@@ -1014,3 +1014,8 @@ GUI:
 - Проверено `.scratch/t_cardread.py`: пять фраз просмотра дают `get_project_context`/`calendar`, событий 3→3, в ответе список; пустой проект — «Событий пока нет»; действия и остальные правила не задеты.
 - Приёмка exit 0; регресс d2, d3, d4, step5–step13, c1–c5, processed, validate, legacy_val, smoke_chain — все 0; compileall — 0; `.scratch/t_card.py`, `.scratch/t_fixes.py` — 0.
 - Наблюдение, не менял: `get_project_context` отдаёт непустой `effect`, поэтому каждое чтение попадает в журнал строкой «Журнал: act_…». Для read-only действий это шум, но поведение журнала не трогал.
+
+## 22.11.2026 — чтение контекста больше не пишется в журнал
+- `ai_core.ToolSpec.read_only` (по умолчанию False), у `get_project_context` — True; `_execute` для таких инструментов возвращает только сводку, без журнала и списка действий. `context()` и его `effect` не менялись.
+- Проверено `.scratch/t_journal.py`: три фразы просмотра календаря — в ответе нет «Журнал:», список событий на месте, событий 3→3, журнал 1→1; `create_shooting_task` журнал пишет (1→2); `context("all")` отдаёт прежний `effect`.
+- Приёмка exit 0 (11 шагов, разрывов нет, журнал 12 записей); `.scratch/t_cardread.py`, `.scratch/t_card.py`, `.scratch/t_fixes.py` — 0; регресс d2, d3, d4, step5–step13, c1–c5, processed, validate, legacy_val, smoke_chain — все 0; compileall — 0.

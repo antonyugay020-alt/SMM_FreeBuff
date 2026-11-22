@@ -264,6 +264,7 @@ class ToolSpec:
     args: Dict[str, type]
     handler: Callable[[Dict[str, Any]], Dict[str, Any]]
     needs_confirmation: Optional[Callable[[Dict[str, Any]], bool]] = None
+    read_only: bool = False
 
 
 class ToolRegistry:
@@ -1931,7 +1932,7 @@ class AICore:
     # --- setup ---
     def _register_tools(self) -> None:
         self.registry.register(ToolSpec("get_project_context", "прочитать профиль, стратегию, план, календарь",
-                                        {"scope": str}, self.tools.context))
+                                        {"scope": str}, self.tools.context, read_only=True))
         self.registry.register(ToolSpec("search_knowledge", "поиск по материалам и документам",
                                         {"query": str, "limit": int}, self.tools.search_knowledge))
         self.registry.register(ToolSpec("create_strategy", "создать блоки стратегии",
@@ -2081,6 +2082,9 @@ class AICore:
 
         undo = outcome.get("undo") or {}
         effect = outcome.get("effect") or {}
+        if spec.read_only:
+            # чтение ничего не меняет: журнал и действия не нужны, ответ — только сводка
+            return AIReply(outcome.get("summary", "Готово"), layer)
         if not effect and not undo:
             # nothing changed (no model, unknown id, validation failure) — nothing to journal
             return AIReply(outcome.get("summary", "Ничего не изменил."), layer)
