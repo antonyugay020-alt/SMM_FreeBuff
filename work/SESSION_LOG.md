@@ -1036,3 +1036,7 @@ GUI:
 - `ai_core`: `THINK_BLOCK`/`_strip_thinking`, `_balanced_objects`, `_json_candidates`; `generate_strategy_sections` и `AIRouter._from_model` перебирают кандидатов и берут подходящего. `_extract_json` — первый кандидат.
 - Проверено `.scratch/t_thinking.py`: 8 вариантов ответа (<thinking> с примером JSON и ```json, <thinking> + голый JSON, рассуждения без тегов, незакрытый <thinking>, текст вокруг, скобки внутри строк, ```json, голый JSON) — стратегия собирается там, где ответ есть, и не собирается на обрезанном рассуждении; роутер на примере `{"tool": "delete_record"}` внутри thinking выбирает настоящий `create_content_plan`.
 - Приёмка exit 0; регресс d2, d3, d4, step5–step13, c1–c5, processed, validate, legacy_val, smoke_chain — все 0; compileall — 0; read-only и четыре правки — 0; `work/acceptance_live.py` здесь exit 2 (Ollama нет).
+
+## 22.11.2026 — архив для живой приёмки на машине пользователя
+- На компьютере пользователя копии проекта нет (поиск `ai_core.py` по `C:\` пуст, `git remote` в проекте отсутствует). Собран `acceptance_bundle.zip` (183 КБ, 58 файлов): код `AI_SMM_Work_Architecture_A75` без `.venv`, `media`, `data`, `__pycache__` плюс `work/acceptance_live.py`; архив в репозиторий не коммитится.
+- Проверено: архив распакован в чистый каталог, `acceptance_live.py` из него импортирует код и доходит до проверки Ollama (exit 2 — Ollama в этой среде нет). Запуск из любого cwd работает, путь до кода считается от файла скрипта.
