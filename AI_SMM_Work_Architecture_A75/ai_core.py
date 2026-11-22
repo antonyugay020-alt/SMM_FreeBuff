@@ -1623,7 +1623,7 @@ class AIRouter:
                                  "rules")
         if re.search(r"проверь.{0,20}(доступ|инстаграм|instagram)|доступ к инстаграм", low):
             return RouteDecision("instagram_status", {}, "rules")
-        if re.search(r"календар", low) and re.search(r"план|позиц|событ|добав|перенес|синхрон|расстав", low):
+        if re.search(r"календар", low) and re.search(r"добав|перенес|синхрон|расстав|постав", low):
             return RouteDecision("sync_plan_events", {}, "rules")
         if re.search(r"(проверь|проверить|проверка).{0,25}(план|публикац|позиц)"
                      r"|(план|публикац).{0,20}провер", low):
