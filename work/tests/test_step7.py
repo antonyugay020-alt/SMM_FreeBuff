@@ -6,7 +6,6 @@ APP = Path(__file__).resolve().parents[2] / "AI_SMM_Work_Architecture_A75"
 PROJECT = APP.parent
 import os
 import shutil
-import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -109,15 +108,10 @@ clip.write_bytes(b"not a real video, ffmpeg stubbed")
 poster_src = WORK / "poster.png"
 Image.new("RGB", (320, 180), (10, 200, 160)).save(poster_src)
 
-stub_dir = WORK / "bin"
-stub_dir.mkdir()
-stub = stub_dir / "ffmpeg"
-stub.write_text(f"#!/bin/sh\nfor last; do :; done\ncp '{poster_src}' \"$last\"\n")
-stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
-old_path = os.environ["PATH"]
-os.environ["PATH"] = f"{stub_dir}:{old_path}"
-
 from gui_sections import publications_section as pubs  # noqa: E402
+from _ffmpeg_fake import patch_ffmpeg  # noqa: E402
+
+patch_ffmpeg(pubs, poster_source=poster_src)
 
 item = {"id": "vid_1", "name": "t7_clip.mp4", "type": "video", "path": str(clip)}
 pm = pubs._pixmap_for(item)
@@ -136,14 +130,13 @@ print("VIDEO_POSTER_OK", pubs._video_poster(clip).name)
 # --- 4. без ffmpeg — честная надпись, без падения ---
 clip2 = MEDIA / "t7_clip2.mp4"
 clip2.write_bytes(b"still not a video")
-os.environ["PATH"] = ""
+patch_ffmpeg(pubs, available=False)
 item2 = {"id": "vid_2", "name": "t7_clip2.mp4", "type": "video", "path": str(clip2)}
 assert pubs._pixmap_for(item2) is None
 card2 = pubs.MediaCard(item2)
 assert card2.findChildren(pubs.QLabel)[0].text() == "VIDEO"
 panel.show_item(item2)
 assert "ffmpeg" in panel.image.text(), panel.image.text()
-os.environ["PATH"] = old_path
 print("VIDEO_FALLBACK_OK")
 
 cleanup()

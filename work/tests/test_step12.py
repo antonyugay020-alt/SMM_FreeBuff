@@ -16,8 +16,15 @@ def ok(name, cond, extra=""):
     if not cond:
         raise SystemExit(1)
 
-FONT = "/opt/freestyle/python/lib/python3.12/site-packages/matplotlib/mpl-data/fonts/ttf/DejaVuSans.ttf"
-pdf_export.FONT_CANDIDATES.insert(0, FONT)
+FONT = next((p for p in (
+    "/opt/freestyle/python/lib/python3.12/site-packages/matplotlib/mpl-data/fonts/ttf/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "C:/Windows/Fonts/arial.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+) if Path(p).is_file()), None)
+if FONT and FONT not in pdf_export.FONT_CANDIDATES:
+    pdf_export.FONT_CANDIDATES.insert(0, FONT)
+ORIGINAL_FONTS = list(pdf_export.FONT_CANDIDATES)
 
 tmp = tempfile.mkdtemp(prefix="step12_")
 dm = DataManager("t12", tmp)
@@ -67,10 +74,14 @@ ok("пустой план не выгружается", "выгружать не
 pdf_export.FONT_CANDIDATES[:] = []
 r = core.run_tool("export_pdf", kind="plan", dest=str(out))
 ok("без шрифта — сообщение", "шрифт" in r.text.lower(), r.text)
-pdf_export.FONT_CANDIDATES.insert(0, FONT)
+pdf_export.FONT_CANDIDATES[:] = ORIGINAL_FONTS
 
-core.run_tool("export_pdf", kind="plan")
-ok("без dest — в проект", list((Path(tmp) / "exports").glob("*-plan.pdf")), tmp)
+reply = core.run_tool("export_pdf", kind="plan")
+exports = Path(tmp) / "exports"
+found = list(exports.glob("*-plan.pdf")) if exports.is_dir() else []
+ok("без dest — в проект", found,
+   f"{reply.text} :: {tmp} -> "
+   f"{sorted(p.name for p in exports.glob('*')) if exports.is_dir() else 'папки exports нет'}")
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication

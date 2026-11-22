@@ -19,21 +19,13 @@ def ok(name, cond, extra=""):
     if not cond:
         raise SystemExit(1)
 
-# --- заглушки ffmpeg/ffprobe в PATH ---
-tools = Path(tempfile.mkdtemp(prefix="c1bin_"))
-ffmpeg = tools / "ffmpeg"
-ffmpeg.write_text("#!/bin/sh\nif [ \"$1\" = \"-version\" ]; then echo ffmpeg; exit 0; fi\n"
-                  "for last; do :; done\nprintf 'FAKEVIDEO' > \"$last\"\n")
-ffprobe = tools / "ffprobe"
-ffprobe.write_text("#!/bin/sh\necho '{\"streams\":[{\"codec_type\":\"video\",\"width\":1080,"
-                   "\"height\":1920,\"r_frame_rate\":\"30000/1001\",\"codec_name\":\"h264\"}],"
-                   "\"format\":{\"duration\":\"12.5\"}}'\n")
-for script in (ffmpeg, ffprobe):
-    script.chmod(0o755)
-os.environ["PATH"] = f"{tools}:{os.environ['PATH']}"
+# --- подмена ffmpeg/ffprobe в модуле: работает и на Linux, и на Windows ---
+from _ffmpeg_fake import patch_ffmpeg  # noqa: E402
+
+patch_ffmpeg(video_processor)
 
 proc = video_processor.VideoProcessor()
-ok("ffmpeg найден через PATH", proc.ffmpeg_available)
+ok("ffmpeg отвечает на -version", proc.ffmpeg_available)
 
 tmp = tempfile.mkdtemp(prefix="c1_")
 dm = DataManager("c1", tmp)
@@ -95,6 +87,7 @@ from PySide6.QtWidgets import QApplication
 app = QApplication([])
 import gui_sections.publications_section as pubs
 
+patch_ffmpeg(pubs)
 sec = pubs.PublicationsSection(dm, {})
 sec.current = dm.get_media_ready()[0]
 pubs.QInputDialog.getItem = staticmethod(lambda *a, **k: ("Reels 9:16, до 90 сек", True))
