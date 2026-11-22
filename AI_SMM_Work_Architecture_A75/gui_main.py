@@ -35,6 +35,7 @@ PROJECT_SECTIONS = [
     ("media_content", "🖼️", "Медиа-контент"),
     ("publications", "📢", "Публикации"),
     ("analytics", "📊", "Аналитика"),
+    ("plans", "📐", "Планы и схемы"),
     ("other", "📦", "Прочие материалы"),
 ]
 
@@ -44,6 +45,7 @@ SIMPLE_SECTIONS = {
     "shooting_tasks": ("gui_sections.shooting_tasks_section", "ShootingTasksSection"),
     "publications": ("gui_sections.publications_section", "PublicationsSection"),
     "analytics": ("gui_sections.analytics_section", "AnalyticsSection"),
+    "plans": ("gui_sections.plans_section", "PlansSection"),
     "media_content": ("gui_sections.media_content_section", "MediaContentSection"),
     "other": ("gui_sections.other_materials_section", "OtherMaterialsSection"),
 }
@@ -59,6 +61,7 @@ SECTION_TITLES = {
     "media_content": ("Медиа-контент", "Исходники, эталоны, готовые материалы"),
     "publications": ("Публикации", "Управление готовым контентом и планирование публикаций"),
     "analytics": ("Аналитика", "Метрики публикаций: охват, реакции, вовлечённость"),
+    "plans": ("Планы и схемы", "План публикаций и стратегия в PDF"),
     "other": ("Прочие материалы", "Архив, буфер, документы, референсы"),
     "brand_profile": ("Бренд-профиль", "Вход для стратегии и ТЗ: ниша, аудитория, tone of voice"),
 }

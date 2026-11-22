@@ -894,6 +894,37 @@ class AITools:
                 "effect": {"path": str(folder)},
                 "undo": {"op": "delete_folder", "path": str(folder)}}
 
+    # --- PDF documents: plan and strategy ---
+    PDF_KINDS = {"plan": "план публикаций", "strategy": "стратегия"}
+
+    def export_pdf(self, kind: str = "plan", dest: str = "") -> Dict[str, Any]:
+        """План или стратегия в PDF: в `dest`, если папка выбрана, иначе в проект."""
+        import pdf_export
+
+        name = str(kind or "").strip().lower()
+        label = self.PDF_KINDS.get(name)
+        if label is None:
+            return {"summary": f"Неизвестный документ «{kind}»: нужен plan или strategy",
+                    "effect": {}, "undo": {}}
+        if name == "plan" and not self.dm.get_content_plan():
+            return {"summary": "Контент-план пуст — выгружать нечего", "effect": {}, "undo": {}}
+        if name == "strategy" and not (self.dm.get_strategy() or {}).get("sections"):
+            return {"summary": "Стратегии пока нет — выгружать нечего", "effect": {}, "undo": {}}
+
+        base = Path(dest) if str(dest).strip() else Path(self.dm.data_dir) / "exports"
+        base.mkdir(parents=True, exist_ok=True)
+        path = base / f"{datetime.now():%Y%m%d-%H%M%S}-{name}.pdf"
+        try:
+            if name == "strategy":
+                pdf_export.export_strategy_pdf(self.dm, str(path))
+            else:
+                pdf_export.export_content_plan_pdf(self.dm, str(path))
+        except RuntimeError as exc:  # нет fpdf2 или шрифта — говорим что именно
+            return {"summary": str(exc), "effect": {}, "undo": {}}
+        return {"summary": f"Выгрузил {label} в {path}",
+                "effect": {"path": str(path), "kind": name},
+                "undo": {"op": "delete_file", "path": str(path)}}
+
     # --- undo dispatcher ---
     def undo(self, action: Dict[str, Any]) -> str:
         spec = action.get("undo") or {}
@@ -916,6 +947,10 @@ class AITools:
                 Path(name).unlink(missing_ok=True)
             self.dm.save()
             return f"Откатил «{action.get('tool')}»"
+        if op == "delete_file":
+            path = Path(spec.get("path", ""))
+            path.unlink(missing_ok=True)
+            return f"Удалил файл {path.name}"
         if op == "delete_folder":
             import shutil
             shutil.rmtree(spec.get("path", ""), ignore_errors=True)
@@ -974,6 +1009,10 @@ class AIRouter:
                                      "rules", 0.4,
                                      "Нет позиции плана без ТЗ. Сначала добавьте пост в план.")
             return RouteDecision("create_shooting_task", {"plan_id": plan_id}, "rules")
+        if re.search(r"pdf|печатн", low) and re.search(r"план|стратег|выгруз", low):
+            return RouteDecision("export_pdf",
+                                 {"kind": "strategy" if "стратег" in low else "plan"},
+                                 "rules")
         if re.search(r"(собери|сделай|подготовь).{0,20}(пакет|выгруз)|экспорт", low):
             return RouteDecision("export_package", {}, "rules")
         if re.search(r"аналитик|что зашло|что сработал|метрик|вовлеч[её]нност", low):
@@ -1270,6 +1309,8 @@ class AICore:
                                         {"media_ids": list, "operations": list},
                                         self.tools.batch_photo,
                                         needs_confirmation=lambda a: len(a.get("media_ids") or []) > 10))
+        self.registry.register(ToolSpec("export_pdf", "план или стратегия в PDF",
+                                        {"kind": str, "dest": str}, self.tools.export_pdf))
         self.registry.register(ToolSpec("export_package", "пакет публикаций за период",
                                         {"date_from": str, "date_to": str, "dest": str},
                                         self.tools.export_package,

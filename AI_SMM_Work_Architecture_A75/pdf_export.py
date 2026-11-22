@@ -27,6 +27,7 @@ except ImportError:
     pass
 
 FONT_CANDIDATES = [
+    str(Path(__file__).resolve().parent / "assets" / "DejaVuSans.ttf"),
     "C:/Windows/Fonts/arial.ttf",
     "C:/Windows/Fonts/tahoma.ttf",
     "C:/Windows/Fonts/segoeui.ttf",
@@ -41,6 +42,11 @@ def _find_font() -> Optional[str]:
         if Path(f).exists():
             return f
     return None
+
+
+_FONT_ERROR = ("Не найден системный шрифт с поддержкой кириллицы "
+               "(Arial / Tahoma / DejaVu). Укажи путь в FONT_CANDIDATES.")
+_LIB_ERROR = "Для экспорта PDF нужна библиотека. Установи:\n\n    pip install fpdf2"
 
 
 def check_dependencies() -> str:
@@ -65,19 +71,14 @@ def export_shooting_task_pdf(task: Dict[str, Any], data_manager, output_path: st
     """Generate a TZ PDF for a shooting task. Returns the saved path."""
     font = _find_font()
     if not font:
-        raise RuntimeError(
-            "Не найден системный шрифт с поддержкой кириллицы "
-            "(Arial / Tahoma / DejaVu). Укажи путь в FONT_CANDIDATES."
-        )
+        raise RuntimeError(_FONT_ERROR)
 
     if HAS_FPDF:
         return _export_fpdf(task, data_manager, output_path, font)
     elif HAS_REPORTLAB:
         return _export_reportlab(task, data_manager, output_path, font)
     else:
-        raise RuntimeError(
-            "Для экспорта PDF нужна библиотека. Установи:\n\n    pip install fpdf2"
-        )
+        raise RuntimeError(_LIB_ERROR)
 
 
 def _meta_rows(task, data_manager):
@@ -291,4 +292,145 @@ def _export_reportlab(task, data_manager, output_path, font_path):
 
     c.save()
     logger.info(f"PDF exported (reportlab): {output_path}")
+    return str(output_path)
+
+
+# ---------------------------------------------------------------------------
+# Content plan / strategy documents (fpdf2: tables and flowing text)
+# ---------------------------------------------------------------------------
+PAGE_LEFT = 12
+USABLE = 210 - 2 * PAGE_LEFT  # A4 width in mm
+PLAN_COLUMNS = ((20, "date", "Дата"), (86, "topic", "Тема"), (28, "rubric", "Рубрика"),
+                (24, "format", "Формат"), (28, "status", "Статус"))
+KPI_COLUMNS = ((70, "metric", "Метрика"), (40, "current", "Сейчас"),
+               (40, "target", "Цель"), (36, "deadline", "Срок"))
+
+
+def _new_document(font_path: str):
+    if not HAS_FPDF:
+        raise RuntimeError(_LIB_ERROR)
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.add_font("Body", "", font_path)
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_left_margin(PAGE_LEFT)
+    pdf.set_right_margin(PAGE_LEFT)
+    pdf.add_page()
+    return pdf
+
+
+def _project_name(data_manager) -> str:
+    strategy = (data_manager.get_strategy() or {}) if data_manager else {}
+    return strategy.get("project_name") or "Проект"
+
+
+def _document_head(pdf, title: str, note: str) -> None:
+    pdf.set_font("Body", "", 17)
+    pdf.set_text_color(20, 24, 33)
+    pdf.cell(USABLE, 9, title, new_x="LMARGIN", new_y="NEXT")
+    pdf.set_draw_color(88, 166, 255)
+    pdf.set_line_width(0.6)
+    y = pdf.get_y() + 1
+    pdf.line(PAGE_LEFT, y, PAGE_LEFT + USABLE, y)
+    pdf.ln(4)
+    pdf.set_font("Body", "", 8)
+    pdf.set_text_color(120, 128, 140)
+    pdf.multi_cell(USABLE, 5, note)
+    pdf.ln(3)
+
+
+def _document_footer(pdf, project: str, kind: str) -> None:
+    pdf.ln(6)
+    pdf.set_font("Body", "", 7)
+    pdf.set_text_color(150, 156, 166)
+    pdf.cell(USABLE, 5, f"AI SMM Manager  ·  {project}  ·  {kind}",
+             new_x="LMARGIN", new_y="NEXT", align="C")
+
+
+def _short(value: Any, limit: int) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def _table_head(pdf, columns) -> None:
+    pdf.set_font("Body", "", 8)
+    pdf.set_fill_color(230, 235, 240)
+    pdf.set_text_color(40, 46, 58)
+    for width, _, title in columns:
+        pdf.cell(width, 6, title, border=1, fill=True, align="C")
+    pdf.ln()
+
+
+def _table_rows(pdf, columns, rows) -> None:
+    pdf.set_font("Body", "", 8)
+    for row in rows:
+        pdf.set_text_color(20, 24, 33)
+        for width, key, _ in columns:
+            limit = 60 if key == "topic" else 60 if key == "metric" else 24
+            pdf.cell(width, 6, _short(row.get(key), limit), border=1)
+        pdf.ln()
+
+
+def _empty_note(pdf, text: str) -> None:
+    pdf.ln(2)
+    pdf.set_font("Body", "", 9)
+    pdf.set_text_color(90, 98, 110)
+    pdf.cell(USABLE, 6, text, new_x="LMARGIN", new_y="NEXT")
+
+
+def export_content_plan_pdf(data_manager, output_path: str) -> str:
+    """Контент-план одной таблицей: дата, тема, рубрика, формат, статус."""
+    font = _find_font()
+    if not font:
+        raise RuntimeError(_FONT_ERROR)
+    items = list(data_manager.get_content_plan())
+    project = _project_name(data_manager)
+    pdf = _new_document(font)
+    _document_head(pdf, "Контент-план",
+                   f"{project}  ·  сформировано: {datetime.now():%d.%m.%Y %H:%M}  ·  "
+                   f"позиций: {len(items)}")
+    _table_head(pdf, PLAN_COLUMNS)
+    _table_rows(pdf, PLAN_COLUMNS, items)
+    if not items:
+        _empty_note(pdf, "План пуст: добавьте позиции в разделе «Контент-план».")
+    _document_footer(pdf, project, "план публикаций")
+    pdf.output(str(output_path))
+    logger.info(f"Content plan PDF: {output_path}")
+    return str(output_path)
+
+
+def export_strategy_pdf(data_manager, output_path: str) -> str:
+    """Стратегия текстом по блокам плюс таблица KPI."""
+    font = _find_font()
+    if not font:
+        raise RuntimeError(_FONT_ERROR)
+    strategy = (data_manager.get_strategy() or {}) if data_manager else {}
+    sections = strategy.get("sections") or []
+    kpis = strategy.get("kpis") or []
+    project = _project_name(data_manager)
+    pdf = _new_document(font)
+    _document_head(pdf, "Стратегия проекта",
+                   f"{project}  ·  версия {strategy.get('version') or '—'}  ·  "
+                   f"блоков: {len(sections)}  ·  сформировано: {datetime.now():%d.%m.%Y %H:%M}")
+
+    for section in sections:
+        pdf.set_font("Body", "", 11)
+        pdf.set_text_color(20, 24, 33)
+        pdf.multi_cell(USABLE, 6, str(section.get("title") or "Блок"))
+        pdf.set_font("Body", "", 9)
+        pdf.set_text_color(40, 46, 58)
+        pdf.multi_cell(USABLE, 5, str(section.get("content") or "—"))
+        pdf.ln(3)
+    if not sections:
+        _empty_note(pdf, "Стратегии пока нет: создайте её на шаге «Стратегия».")
+
+    pdf.ln(2)
+    _fpdf_section(pdf, USABLE, "KPI")
+    _table_head(pdf, KPI_COLUMNS)
+    _table_rows(pdf, KPI_COLUMNS, kpis)
+    if not kpis:
+        _empty_note(pdf, "KPI не заданы.")
+
+    _document_footer(pdf, project, "стратегия")
+    pdf.output(str(output_path))
+    logger.info(f"Strategy PDF: {output_path}")
     return str(output_path)
