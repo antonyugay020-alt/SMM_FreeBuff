@@ -80,11 +80,16 @@ def main() -> int:
         step = time.time()
         value = fn()
         seconds = time.time() - step
-        text = getattr(value, "text", "") or str(value)
+        if isinstance(value, dict):
+            text = str(value.get("summary") or "")
+        else:
+            text = getattr(value, "text", "") or str(value)
         say(title, text, seconds)
         return value
 
     run("стратегия", lambda: core.handle("сделай стратегию для кофейни у дома"))
+    for section in (dm.get_strategy().get("sections") or [])[:5]:
+        print(f"· {section.get('title')}: {str(section.get('content') or '')[:300]}")
     run("контент-план на 10 постов", lambda: core.handle("создай контент-план на 10 постов"))
     plan = dm.get_content_plan()
     if not plan:
@@ -95,9 +100,12 @@ def main() -> int:
     caption_started = time.time()
     for item in plan[:2]:
         run(f"подпись: {item.get('topic')}", lambda item=item: core.tools.write_captions(item["id"]))
+        print("—", (dm.get_content_plan_item(item["id"]) or {}).get("caption", ""))
     for item in plan[2:]:
         core.tools.write_captions(item["id"])
     captions_seconds = time.time() - caption_started
+    lengths = [len(str(i.get("caption") or "")) for i in dm.get_content_plan()]
+    print(f"\nдлина подписей: мин {min(lengths)}, макс {max(lengths)} символов")
 
     for item in plan:
         core.handle("создай ТЗ")
