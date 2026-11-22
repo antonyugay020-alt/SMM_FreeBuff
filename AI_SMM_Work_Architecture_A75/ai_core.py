@@ -445,7 +445,7 @@ class AITools:
                 "undo": {"op": "restore_strategy", "data": before}}
 
     # --- generic record tools for the content chain ---
-    EDITABLE_SECTIONS = ("content_plan", "calendar_events", "shooting_tasks")
+    EDITABLE_SECTIONS = ("content_plan", "calendar_events", "shooting_tasks", "post_metrics")
 
     def _records(self, section: str) -> Optional[List[Dict[str, Any]]]:
         if section not in self.EDITABLE_SECTIONS:
@@ -556,6 +556,75 @@ class AITools:
                 "effect": {"checked": len(plan), "issues": len(issues),
                            "by_kind": by_kind,
                            "ids": [issue["id"] for issue in issues]},
+                "undo": NOOP_UNDO}
+
+    def analyze_performance(self, period_days: int = 30) -> Dict[str, Any]:
+        """Сводка по метрикам: охват, вовлечённость, лучшая рубрика, топ и слабый пост."""
+        plan = {str(item.get("id")): item for item in self.dm.get_content_plan()}
+        metrics = [m for m in self.dm.get_post_metrics() if str(m.get("plan_id")) in plan]
+        if not metrics:
+            return {"summary": "Аналитика: метрик пока нет — впишите охват и реакции "
+                               "по опубликованным постам в разделе «Аналитика»",
+                    "effect": {}, "undo": {}}
+
+        cutoff = None
+        if int(period_days or 0) > 0:
+            cutoff = (datetime.now() - timedelta(days=int(period_days))).date()
+
+        rows = []
+        for row in metrics:
+            item = plan[str(row.get("plan_id"))]
+            try:
+                day = datetime.strptime(str(item.get("date") or ""), "%d.%m.%Y").date()
+            except ValueError:
+                day = None
+            if cutoff and day and day < cutoff:  # посты без даты не отбрасываем
+                continue
+            reach = int(row.get("reach") or 0)
+            reactions = sum(int(row.get(key) or 0) for key in ("likes", "comments", "saves"))
+            rows.append({
+                "date": str(item.get("date") or "—"),
+                "topic": str(item.get("topic") or "—"),
+                "rubric": str(item.get("rubric") or "—"),
+                "reach": reach, "reactions": reactions,
+                "er": (reactions / reach * 100) if reach else 0.0,
+            })
+        if not rows:
+            return {"summary": f"Аналитика: за последние {int(period_days)} дней метрик нет",
+                    "effect": {}, "undo": {}}
+
+        total_reach = sum(row["reach"] for row in rows)
+        avg_er = sum(row["er"] for row in rows) / len(rows)
+        lines = [f"Аналитика: {len(rows)} постов · охват {total_reach:,}".replace(",", " ")
+                 + f" · средняя вовлечённость {avg_er:.1f}%"]
+
+        by_rubric: Dict[str, List[float]] = {}
+        for row in rows:
+            by_rubric.setdefault(row["rubric"], []).append(row["er"])
+        best_rubric, best_values = max(by_rubric.items(),
+                                       key=lambda kv: sum(kv[1]) / len(kv[1]))
+        lines.append(f"Лучшая рубрика: «{best_rubric}» — ER "
+                     f"{sum(best_values) / len(best_values):.1f}% на {len(best_values)} постах")
+
+        top = sorted(rows, key=lambda r: r["er"], reverse=True)[:3]
+        lines.append("Топ по вовлечённости:")
+        lines += [f"· {row['date']} · {row['topic']} — охват {row['reach']}, ER {row['er']:.1f}%"
+                  for row in top]
+        weakest = min(rows, key=lambda r: r["er"])
+        if weakest["er"] < avg_er:
+            lines.append(f"Слабее остальных: {weakest['date']} · {weakest['topic']} — "
+                         f"охват {weakest['reach']}, ER {weakest['er']:.1f}%")
+
+        measured = {str(m.get("plan_id")) for m in metrics}
+        missing = [item for item in self.dm.get_content_plan()
+                   if item.get("status") == "Опубликовано"
+                   and str(item.get("id")) not in measured]
+        if missing:
+            lines.append(f"Без метрик: {len(missing)} опубликованных постов")
+
+        return {"summary": "\n".join(lines),
+                "effect": {"posts": len(rows), "reach": total_reach,
+                           "avg_er": round(avg_er, 1), "without_metrics": len(missing)},
                 "undo": NOOP_UNDO}
 
     def create_content_plan(self, count: int = 5, rubrics: Optional[List[str]] = None,
@@ -907,6 +976,9 @@ class AIRouter:
             return RouteDecision("create_shooting_task", {"plan_id": plan_id}, "rules")
         if re.search(r"(собери|сделай|подготовь).{0,20}(пакет|выгруз)|экспорт", low):
             return RouteDecision("export_package", {}, "rules")
+        if re.search(r"аналитик|что зашло|что сработал|метрик|вовлеч[её]нност", low):
+            return RouteDecision("analyze_performance",
+                                 {"period_days": _period_days(low)}, "rules")
         if re.search(r"подпись|подписи|caption|хэштег", low):
             plan_id = self._latest_plan_id()
             if not plan_id:
@@ -1186,6 +1258,10 @@ class AICore:
                                         {}, self.tools.sync_plan_events))
         self.registry.register(ToolSpec("validate_plan", "проверка плана: даты, подписи, ТЗ",
                                         {}, self.tools.validate_plan))
+        self.registry.register(ToolSpec("analyze_performance",
+                                        "сводка по метрикам: охват, вовлечённость, топ постов",
+                                        {"period_days": int},
+                                        self.tools.analyze_performance))
         self.registry.register(ToolSpec("write_captions", "подпись, хэштеги, CTA",
                                         {"plan_id": str}, self.tools.write_captions))
         self.registry.register(ToolSpec("import_media", "импорт файлов в проект",

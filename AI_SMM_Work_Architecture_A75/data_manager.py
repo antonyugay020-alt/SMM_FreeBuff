@@ -26,6 +26,7 @@ class DataManager:
         self._data = {
             "strategy": self._default_strategy(),
             "content_plan": self._default_content_plan(),
+            "post_metrics": [],
             "calendar_events": self._default_calendar_events(),
             "shooting_tasks": self._default_shooting_tasks(),
             "media_sources": self._default_media_sources(),
@@ -214,6 +215,10 @@ class DataManager:
             if item.get("id") == item_id:
                 return item
         return None
+
+    def get_post_metrics(self) -> List[Dict[str, Any]]:
+        """Замеры по опубликованным постам (одна запись на позицию плана)."""
+        return self._data.get("post_metrics", [])
 
     def get_calendar_events(self) -> List[Dict[str, Any]]:
         return self._data["calendar_events"]

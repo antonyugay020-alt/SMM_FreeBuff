@@ -77,6 +77,16 @@ CREATE TABLE IF NOT EXISTS content_plan (
     source          TEXT
 );
 
+CREATE TABLE IF NOT EXISTS post_metrics (
+    id          TEXT PRIMARY KEY,
+    plan_id     TEXT,
+    reach       INTEGER,
+    likes       INTEGER,
+    comments    INTEGER,
+    saves       INTEGER,
+    measured_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS calendar_events (
     id          TEXT PRIMARY KEY,
     date        TEXT,
@@ -190,6 +200,7 @@ CREATE TABLE IF NOT EXISTS ai_runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_plan_date  ON content_plan(date);
+CREATE INDEX IF NOT EXISTS idx_metrics_plan ON post_metrics(plan_id);
 CREATE INDEX IF NOT EXISTS idx_event_date ON calendar_events(date);
 CREATE INDEX IF NOT EXISTS idx_media_zone ON media(zone);
 CREATE INDEX IF NOT EXISTS idx_items_folder ON publication_items(folder_id);
@@ -277,6 +288,19 @@ def _display(value: Any) -> Optional[str]:
         return datetime.strptime(text, "%Y-%m-%d").strftime("%d.%m.%Y")
     except ValueError:
         return text
+
+
+def _count(value: Any) -> Optional[int]:
+    """Counter from a GUI cell: '', None -> None; '1 200' -> 1200."""
+    if value is None:
+        return None
+    text = str(value).replace(" ", "").replace("\u00a0", "").strip()
+    if not text:
+        return None
+    try:
+        return int(round(float(text)))
+    except ValueError:
+        return None
 
 
 def _size_to_wh(size: Any) -> Tuple[Optional[int], Optional[int]]:
@@ -399,7 +423,8 @@ class ProjectStore:
 
         with conn:  # one transaction: either the whole project is written or nothing
             for table in ("project_meta", "strategy_sections", "strategy_kpis",
-                          "strategy_versions", "content_plan", "calendar_events",
+                          "strategy_versions", "content_plan", "post_metrics",
+                          "calendar_events",
                           "shooting_shots", "shooting_tasks", "media",
                           "publication_items", "publication_folders", "schedule",
                           "other_files"):
@@ -445,6 +470,14 @@ class ProjectStore:
                   i.get("responsible"), i.get("strategy_link"), i.get("shooting_task_id"),
                   i.get("caption"), i.get("source"))
                  for i in data.get("content_plan", [])])
+
+            conn.executemany(
+                "INSERT INTO post_metrics(id, plan_id, reach, likes, comments, saves, measured_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [(m.get("id"), m.get("plan_id"), _count(m.get("reach")),
+                  _count(m.get("likes")), _count(m.get("comments")),
+                  _count(m.get("saves")), _iso(m.get("measured_at")))
+                 for m in data.get("post_metrics", [])])
 
             conn.executemany(
                 "INSERT INTO calendar_events(id, date, time, type, title, description, link, source)"
@@ -581,6 +614,14 @@ class ProjectStore:
             for row in conn.execute("SELECT * FROM content_plan ORDER BY date IS NULL, date, id")
         ]
 
+        post_metrics = [
+            {"id": row["id"], "plan_id": row["plan_id"] or "",
+             "reach": row["reach"] or 0, "likes": row["likes"] or 0,
+             "comments": row["comments"] or 0, "saves": row["saves"] or 0,
+             "measured_at": _display(row["measured_at"])}
+            for row in conn.execute("SELECT * FROM post_metrics ORDER BY measured_at, id")
+        ]
+
         calendar_events = [
             {"id": row["id"], "date": _display(row["date"]), "time": row["time"],
              "type": row["type"], "title": row["title"], "description": row["description"],
@@ -652,6 +693,7 @@ class ProjectStore:
         return {
             "strategy": strategy,
             "content_plan": content_plan,
+            "post_metrics": post_metrics,
             "calendar_events": calendar_events,
             "shooting_tasks": shooting_tasks,
             "media_sources": media_sources,
