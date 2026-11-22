@@ -950,3 +950,11 @@ GUI:
 - Коды выхода: d2, d3, d4, step5–step13, c1–c5, processed, validate, legacy_val — все 0; py_compile всех *.py вне .venv — 0.
 - step7 и step9 падали на тестовых утверждениях: сравнивали `source_path` с файлом в проекте, а код (ai_core.py) хранит исходник импорта. Исправлены тесты, код не менялся.
 - Не проверено: живой Graph API и реальная публикация (нет токена и сети), smoke_chain (файла нет в /tmp).
+
+## 22.11.2026 — метка «Опубликовано», статус Cloudinary, сверка чеклиста 5.21
+- Чеклист 5.21: сверен с кодом, расхождение одно — пункт 4 говорил «Cloudinary или R2», R2 не реализован; формулировка исправлена (коммит по DECISIONS).
+- `gui_sections/publications_section.py`: в `PROCESSED_LABELS` добавлена метка `published` → «Опубликовано»; `host_media` уже пишет `hosted`, обе метки идут через `_processed_marks`.
+- `gui_sections/settings_section.py`: строка «Cloudinary» в блоке Instagram — только наличие `CLOUDINARY_CLOUD_NAME`/`CLOUDINARY_API_KEY`/`CLOUDINARY_API_SECRET`, значения не читаются и не показываются.
+- Проверки: headless-скрипт (метки `Ссылка`+`Опубликовано`, статус без env и с env, секрет в текст не попадает) — OK; step5–step10, c1–c5 — exit 0; `py_compile settings_section.py` — 0; `d4` — exit 0.
+- Не проверено: вид меток и строки статуса на экране (offscreen-прогон без просмотра), живые ключи Cloudinary.
+- Следующая модель: Claude Haiku 4.5 (100k) — живая проверка D: ответы Graph API, ошибки токена и прав, dry-run, затем подтверждённая публикация. Запасной — DeepSeek V4.1 Flash Next.
