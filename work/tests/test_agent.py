@@ -305,6 +305,40 @@ ok("в журнале план, подписи и ТЗ",
    <= {entry["tool"] for entry in core.journal.list(50)},
    [entry["tool"] for entry in core.journal.list(50)])
 
+# --- фразы про календарь, выгрузку и пакет не уходят в правило «N постов» ---
+for text, expected in [
+        ("добавь 5 постов в календарь", "sync_plan_events"),
+        ("синхронизируй 5 постов с календарём", "sync_plan_events"),
+        ("подготовь 5 постов к выгрузке", "export_package"),
+        ("собери 5 постов в пакет для инстаграма", "instagram_pack")]:
+    decision = core.router._rules(text)
+    ok(f"«{text}» — не создание новых постов",
+       decision is not None and decision.tool == expected,
+       getattr(decision, "tool", None))
+for text, count in [("нужно 5 постов для инстаграма", 5), ("добавь 3 поста в план", 3)]:
+    decision = core.router._rules(text)
+    ok(f"«{text}» — новый цикл постов",
+       decision is not None and decision.tool == "create_post_cycle"
+       and decision.args.get("count") == count,
+       (getattr(decision, "tool", None), getattr(decision, "args", None)))
+
+# --- календарная фраза не плодит дубли, а расставляет существующие ---
+dm, core, stub = build([])
+for day in range(1, 6):
+    dm.add_content_plan_item({"topic": f"Пост {day}", "rubric": "Польза", "format": "Пост",
+                              "date": f"{day:02d}.02.2026"})
+seeded = len(dm.get_content_plan())
+events_before = len(dm.get_calendar_events())
+reply = core.handle("добавь 5 постов в календарь")
+ok("календарная фраза не создала дубли", len(dm.get_content_plan()) == seeded,
+   f"{seeded} → {len(dm.get_content_plan())}")
+ok("календарная фраза расставила события",
+   len(dm.get_calendar_events()) > events_before,
+   f"{events_before} → {len(dm.get_calendar_events())}")
+ok("итог календарной фразы — про перенос, а не про создание",
+   "план" in (reply.text or "").lower() or "календар" in (reply.text or "").lower(),
+   reply.text)
+
 # --- стратегия из строк, а не словарей, не роняет инструмент ---
 dm, core, stub = build([
     '{"action": "tool", "tool": "create_strategy", "args": {"sections": '

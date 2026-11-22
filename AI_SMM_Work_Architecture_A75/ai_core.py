@@ -2173,7 +2173,9 @@ class AIRouter:
                                  {"count": count, "period_days": _period_days(low)}, "rules")
         cycle = re.search(r"(?:нужн\w*|надо|хочу|хотел\w*|сделай|создай|подготовь|добавь|дай)"
                           r".{0,25}?\b(\d{1,3})\s*(?:пост|публикац|позиц)", low)
-        if cycle:
+        # календарь, выгрузка и упаковка — не создание новых постов: у них свои правила
+        if cycle and not re.search(r"календар|синхрон|перенес|расстав|выгруз|экспорт"
+                                   r"|пакет|pdf|печатн", low):
             return RouteDecision("create_post_cycle",
                                  {"count": int(cycle.group(1)),
                                   "period_days": _period_days(low)}, "rules")
