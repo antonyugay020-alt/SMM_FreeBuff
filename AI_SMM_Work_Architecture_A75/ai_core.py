@@ -1934,7 +1934,8 @@ class AICore:
         self.registry.register(ToolSpec("get_project_context", "прочитать профиль, стратегию, план, календарь",
                                         {"scope": str}, self.tools.context, read_only=True))
         self.registry.register(ToolSpec("search_knowledge", "поиск по материалам и документам",
-                                        {"query": str, "limit": int}, self.tools.search_knowledge))
+                                        {"query": str, "limit": int}, self.tools.search_knowledge,
+                                        read_only=True))
         self.registry.register(ToolSpec("create_strategy", "создать блоки стратегии",
                                         {"brief": str, "sections": list}, self.tools.create_strategy,
                                         needs_confirmation=lambda a: bool(
@@ -1967,7 +1968,7 @@ class AICore:
         self.registry.register(ToolSpec("analyze_performance",
                                         "сводка по метрикам: охват, вовлечённость, топ постов",
                                         {"period_days": int},
-                                        self.tools.analyze_performance))
+                                        self.tools.analyze_performance, read_only=True))
         self.registry.register(ToolSpec("write_captions", "подпись, хэштеги, CTA",
                                         {"plan_id": str}, self.tools.write_captions))
         self.registry.register(ToolSpec("import_media", "импорт файлов в проект",
@@ -1989,7 +1990,7 @@ class AICore:
                                         needs_confirmation=lambda a: len(a.get("media_ids") or []) > 3))
         self.registry.register(ToolSpec("instagram_status",
                                         "проверить доступ к Instagram (read-only)",
-                                        {}, self.tools.instagram_status))
+                                        {}, self.tools.instagram_status, read_only=True))
         self.registry.register(ToolSpec("host_media",
                                         "выложить материал на публичный URL для публикации",
                                         {"media_id": str}, self.tools.host_media))
