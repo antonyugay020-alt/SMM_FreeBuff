@@ -1,12 +1,15 @@
 """Content plan: editable table, filters, links to strategy and shooting tasks."""
 from typing import Any, Dict, List
 
+from typing import Callable, Optional
+
 from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QComboBox, QInputDialog, QMessageBox)
+    QComboBox, QInputDialog, QMessageBox, QDialog, QDialogButtonBox, QFormLayout,
+    QLineEdit, QTextEdit, QApplication)
 from PySide6.QtCore import Qt, QTimer
 
-from ai_core import NO_DATE, collect_plan_issues
+from ai_core import CAPTION_LIMIT, NO_DATE, collect_plan_issues
 from gui_sections.section_base import DataSection
 from gui_theme import TEXT, MUTED, TEAL
 
@@ -15,6 +18,143 @@ FORMATS = ["Пост", "Reels", "Stories", "Карусель", "Видео"]
 STATUSES = ["Черновик", "Запланировано", "В работе", "Одобрено", "Опубликовано"]
 COLUMNS = ["Дата", "Рубрика", "Тема", "Формат", "Статус", "Ответственный", "Стратегия",
            "ТЗ", "Подпись"]
+
+
+class PostDialog(QDialog):
+    """Ручная правка одного поста: поля плана и текст подписи."""
+
+    def __init__(self, item: Dict[str, Any], strategies: List[Dict[str, Any]],
+                 generate: Optional[Callable[[], str]] = None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Пост")
+        self.setMinimumWidth(600)
+        self._generate = generate
+        self._build_ui(item, strategies)
+
+    @staticmethod
+    def _select(combo: QComboBox, value: Any) -> None:
+        index = combo.findText(str(value or ""))
+        combo.setCurrentIndex(index if index >= 0 else 0)
+
+    def _build_ui(self, item: Dict[str, Any], strategies: List[Dict[str, Any]]) -> None:
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        self.date = QLineEdit(str(item.get("date") or ""))
+        self.date.setObjectName("formInput")
+        self.date.setPlaceholderText("ДД.ММ.ГГГГ")
+        form.addRow("Дата", self.date)
+
+        self.rubric = QComboBox()
+        self.rubric.setObjectName("formInput")
+        self.rubric.addItems(RUBRICS)
+        self._select(self.rubric, item.get("rubric"))
+        form.addRow("Рубрика", self.rubric)
+
+        self.topic = QLineEdit(str(item.get("topic") or ""))
+        self.topic.setObjectName("formInput")
+        self.topic.setPlaceholderText("О чём пост")
+        form.addRow("Тема", self.topic)
+
+        self.format = QComboBox()
+        self.format.setObjectName("formInput")
+        self.format.addItems(FORMATS)
+        self._select(self.format, item.get("format"))
+        form.addRow("Формат", self.format)
+
+        self.status = QComboBox()
+        self.status.setObjectName("formInput")
+        self.status.addItems(STATUSES)
+        self._select(self.status, item.get("status"))
+        form.addRow("Статус", self.status)
+
+        self.responsible = QLineEdit(str(item.get("responsible") or ""))
+        self.responsible.setObjectName("formInput")
+        form.addRow("Ответственный", self.responsible)
+
+        self.strategy = QComboBox()
+        self.strategy.setObjectName("formInput")
+        self.strategy.addItem("—", "")
+        for section in strategies:
+            self.strategy.addItem(str(section.get("title") or section.get("id")),
+                                  str(section.get("id") or ""))
+        current = str(item.get("strategy_link") or "")
+        index = self.strategy.findData(current)
+        if index < 0:
+            index = self.strategy.findText(current) or 0
+        self.strategy.setCurrentIndex(max(index, 0))
+        form.addRow("Стратегия", self.strategy)
+        layout.addLayout(form)
+
+        head = QHBoxLayout()
+        title = QLabel("Подпись")
+        title.setStyleSheet(f"color: {TEXT}; font-weight: 700;")
+        head.addWidget(title)
+        self.counter = QLabel("")
+        self.counter.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        head.addWidget(self.counter)
+        head.addStretch()
+        self.generate_btn = QPushButton("🤖 Сгенерировать")
+        self.generate_btn.setObjectName("topBtn")
+        self.generate_btn.setEnabled(self._generate is not None)
+        self.generate_btn.clicked.connect(self._on_generate)
+        head.addWidget(self.generate_btn)
+        copy_btn = QPushButton("Копировать")
+        copy_btn.setObjectName("topBtn")
+        copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(
+            self.caption.toPlainText()))
+        head.addWidget(copy_btn)
+        layout.addLayout(head)
+
+        self.caption = QTextEdit()
+        self.caption.setObjectName("formInput")
+        self.caption.setAcceptRichText(False)
+        self.caption.setFixedHeight(190)
+        self.caption.setPlainText(str(item.get("caption") or ""))
+        self.caption.textChanged.connect(self._update_counter)
+        layout.addWidget(self.caption)
+        self._update_counter()
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Save).setText("Сохранить")
+        buttons.button(QDialogButtonBox.Cancel).setText("Отмена")
+        buttons.accepted.connect(self._on_save)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _update_counter(self) -> None:
+        length = len(self.caption.toPlainText())
+        color = "#f87171" if length > CAPTION_LIMIT else MUTED
+        self.counter.setText(f"{length}/{CAPTION_LIMIT}")
+        self.counter.setStyleSheet(f"color: {color}; font-size: 11px;")
+
+    def _on_generate(self) -> None:
+        if self._generate is None:
+            return
+        text = self._generate()
+        if text:
+            self.caption.setPlainText(text)
+
+    def _on_save(self) -> None:
+        length = len(self.caption.toPlainText().strip())
+        if length > CAPTION_LIMIT:
+            QMessageBox.warning(self, "Подпись",
+                                f"Подпись длиннее {CAPTION_LIMIT} символов: {length}. "
+                                "Сократите текст.")
+            return
+        self.accept()
+
+    def values(self) -> Dict[str, Any]:
+        """Поля для `edit_record`: только изменяемые ключи плана."""
+        return {"date": self.date.text().strip(),
+                "rubric": self.rubric.currentText().strip(),
+                "topic": self.topic.text().strip(),
+                "format": self.format.currentText().strip(),
+                "status": self.status.currentText().strip(),
+                "responsible": self.responsible.text().strip(),
+                "strategy_link": str(self.strategy.currentData() or "").strip(),
+                "caption": self.caption.toPlainText().strip()}
 
 
 class ContentPlanSection(DataSection):
@@ -96,7 +236,8 @@ class ContentPlanSection(DataSection):
 
         bottom = QHBoxLayout()
         bottom.setContentsMargins(16, 8, 16, 12)
-        for text, handler in (("✓ Проверить", self._on_validate),
+        for text, handler in (("✎ Править", self._on_edit),
+                              ("✓ Проверить", self._on_validate),
                               ("Создать ТЗ", self._on_create_task),
                               ("Подпись", self._on_caption),
                               ("Удалить", self._on_delete)):
@@ -181,9 +322,60 @@ class ContentPlanSection(DataSection):
         date, ok = QInputDialog.getText(self, "Новая позиция", "Дата (ДД.ММ.ГГГГ):")
         if not ok or not date.strip():
             return
+        before = {str(item.get("id")) for item in self._plan()}
         self.add("content_plan", {"date": date.strip(), "rubric": RUBRICS[0], "topic": "Новая тема",
                                   "format": "Пост", "status": "Черновик", "responsible": "SMM"})
         self.refresh()
+        new_id = next((str(item.get("id")) for item in self._plan()
+                       if str(item.get("id")) not in before), "")
+        if new_id:
+            self._open_dialog(new_id)
+
+    # --- ручная правка поста ---
+    def _plan(self) -> List[Dict[str, Any]]:
+        return list(self.dm.get_content_plan()) if self.dm else []
+
+    def _strategy_sections(self) -> List[Dict[str, Any]]:
+        if not self.dm:
+            return []
+        return list((self.dm.get_strategy() or {}).get("sections") or [])
+
+    def _generate_caption(self, item_id: str) -> Callable[[], str]:
+        """Подпись от ИИ для диалога: пишем через журнал и возвращаем готовый текст."""
+        def run() -> str:
+            self.status.setText(self.run("write_captions", plan_id=item_id))
+            item = self.dm.get_content_plan_item(item_id) if self.dm else None
+            return str((item or {}).get("caption") or "")
+        return run
+
+    def _make_dialog(self, item_id: str) -> Optional[PostDialog]:
+        item = self.dm.get_content_plan_item(item_id) if self.dm else None
+        if not item:
+            return None
+        return PostDialog(item, self._strategy_sections(),
+                          self._generate_caption(item_id), self)
+
+    def _save_dialog(self, item_id: str, dialog: PostDialog) -> bool:
+        """Сохранить поля из диалога и обновить таблицу."""
+        self.status.setText(self.update("content_plan", item_id, dialog.values()))
+        self.refresh()
+        return True
+
+    def _open_dialog(self, item_id: str) -> bool:
+        dialog = self._make_dialog(item_id)
+        if dialog is None:
+            QMessageBox.information(self, "Пост", "Позиция не найдена — обновите план.")
+            return False
+        if dialog.exec() != QDialog.Accepted:
+            return False
+        return self._save_dialog(item_id, dialog)
+
+    def _on_edit(self):
+        item_id = self._current_item_id()
+        if not item_id:
+            QMessageBox.information(self, "Пост", "Выберите позицию плана.")
+            return
+        self._open_dialog(item_id)
 
     def _on_ai_plan(self):
         count, ok = QInputDialog.getInt(self, "План на неделю", "Сколько постов:", 7, 1, 30)
