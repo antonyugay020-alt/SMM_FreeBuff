@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sqlite3
 import time
 import uuid
@@ -296,6 +297,29 @@ PHOTO_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 PHOTO_MAX_SIDE = 1600
 PHOTO_QUALITY = 85
 MEDIA_IMAGES = Path(__file__).resolve().parent.parent / "media" / "images"
+
+# Materials (other_files): фиксированные папки и тип файла по расширению
+MATERIAL_FOLDERS = ("archive", "buffer", "documents", "references", "templates")
+MATERIAL_KINDS = {
+    ".png": "image", ".jpg": "image", ".jpeg": "image", ".webp": "image", ".gif": "image",
+    ".mp4": "video", ".mov": "video", ".mkv": "video",
+    ".pdf": "document", ".doc": "document", ".docx": "document", ".txt": "document",
+    ".xls": "document", ".xlsx": "document", ".ppt": "document", ".pptx": "document",
+    ".zip": "archive", ".rar": "archive", ".7z": "archive",
+}
+
+
+def material_kind(path: Path) -> str:
+    return MATERIAL_KINDS.get(Path(path).suffix.lower(), "file")
+
+
+def human_size(size: Any) -> str:
+    value = float(size or 0)
+    for unit in ("Б", "КБ", "МБ"):
+        if value < 1024:
+            return f"{int(value)} Б" if unit == "Б" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} ГБ"
 
 
 def collect_plan_issues(dm) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
@@ -895,35 +919,87 @@ class AITools:
                 "undo": {"op": "delete_folder", "path": str(folder)}}
 
     # --- PDF documents: plan and strategy ---
-    PDF_KINDS = {"plan": "план публикаций", "strategy": "стратегия"}
+    PDF_KINDS = {"plan": "план публикаций", "strategy": "стратегию проекта"}
+    PDF_EMPTY = {"plan": "Контент-план пуст — выгружать нечего",
+                 "strategy": "Стратегии пока нет — выгружать нечего"}
 
     def export_pdf(self, kind: str = "plan", dest: str = "") -> Dict[str, Any]:
         """План или стратегия в PDF: в `dest`, если папка выбрана, иначе в проект."""
         import pdf_export
 
         name = str(kind or "").strip().lower()
-        label = self.PDF_KINDS.get(name)
-        if label is None:
+        if name not in self.PDF_KINDS:
             return {"summary": f"Неизвестный документ «{kind}»: нужен plan или strategy",
                     "effect": {}, "undo": {}}
-        if name == "plan" and not self.dm.get_content_plan():
-            return {"summary": "Контент-план пуст — выгружать нечего", "effect": {}, "undo": {}}
-        if name == "strategy" and not (self.dm.get_strategy() or {}).get("sections"):
-            return {"summary": "Стратегии пока нет — выгружать нечего", "effect": {}, "undo": {}}
+        content = {"plan": self.dm.get_content_plan,
+                   "strategy": lambda: (self.dm.get_strategy() or {}).get("sections") or []}
+        if not content[name]():
+            return {"summary": self.PDF_EMPTY[name], "effect": {}, "undo": {}}
+        exporters = {"plan": pdf_export.export_content_plan_pdf,
+                     "strategy": pdf_export.export_strategy_pdf}
 
         base = Path(dest) if str(dest).strip() else Path(self.dm.data_dir) / "exports"
         base.mkdir(parents=True, exist_ok=True)
         path = base / f"{datetime.now():%Y%m%d-%H%M%S}-{name}.pdf"
         try:
-            if name == "strategy":
-                pdf_export.export_strategy_pdf(self.dm, str(path))
-            else:
-                pdf_export.export_content_plan_pdf(self.dm, str(path))
+            exporters[name](self.dm, str(path))
         except RuntimeError as exc:  # нет fpdf2 или шрифта — говорим что именно
             return {"summary": str(exc), "effect": {}, "undo": {}}
-        return {"summary": f"Выгрузил {label} в {path}",
+        return {"summary": f"Выгрузил {self.PDF_KINDS[name]} в {path}",
                 "effect": {"path": str(path), "kind": name},
                 "undo": {"op": "delete_file", "path": str(path)}}
+
+    # --- materials: files of the project, not ready media ---
+    def import_materials(self, paths: Optional[List[str]] = None,
+                         folder: str = "buffer") -> Dict[str, Any]:
+        """Скопировать файлы в `<проект>/materials/<папка>` и добавить их в «Материалы»."""
+        folder = str(folder or "").strip().lower()
+        if folder not in MATERIAL_FOLDERS:
+            return {"summary": f"Неизвестная папка материалов: {folder or '—'}",
+                    "effect": {}, "undo": {}}
+        sources = [Path(name) for name in (paths or []) if Path(name).exists()]
+        if not sources:
+            return {"summary": "Файлы не найдены — импортировать нечего", "effect": {}, "undo": {}}
+
+        before = copy.deepcopy(self.dm.get_other_files())
+        target = Path(self.dm.data_dir) / "materials" / folder
+        target.mkdir(parents=True, exist_ok=True)
+        records = self.dm._data.setdefault("other_files", {}).setdefault(folder, [])
+        copied = []
+        for source in sources:
+            dest = target / source.name
+            counter = 1
+            while dest.exists():
+                dest = target / f"{source.stem}_{counter}{source.suffix}"
+                counter += 1
+            shutil.copy2(source, dest)
+            copied.append(str(dest))
+            records.append({"id": f"of_{uuid.uuid4().hex[:6]}", "name": dest.name,
+                            "type": material_kind(dest),
+                            "size": human_size(dest.stat().st_size),
+                            "date": datetime.now().strftime("%d.%m.%Y"),
+                            "tags": [], "path": str(dest)})
+        self.dm.save()
+        return {"summary": f"Добавил материалов: {len(copied)} в «{folder}»",
+                "effect": {"files": copied, "folder": folder},
+                "undo": {"op": "restore_sections",
+                         "sections": {"other_files": before}, "files": copied}}
+
+    def delete_material(self, item_id: str = "") -> Dict[str, Any]:
+        """Убрать запись материала; файл на диске остаётся — его не теряем молча."""
+        before = copy.deepcopy(self.dm.get_other_files())
+        folders = self.dm._data.get("other_files") or {}
+        for folder, records in folders.items():
+            kept = [record for record in records if str(record.get("id")) != str(item_id)]
+            if len(kept) == len(records):
+                continue
+            folders[folder] = kept
+            self.dm.save()
+            return {"summary": f"Убрал материал из «{folder}» (файл остался на диске)",
+                    "effect": {"id": item_id, "folder": folder},
+                    "undo": {"op": "restore_sections",
+                             "sections": {"other_files": before}}}
+        return {"summary": f"Материал {item_id} не найден", "effect": {}, "undo": {}}
 
     # --- undo dispatcher ---
     def undo(self, action: Dict[str, Any]) -> str:
@@ -1311,6 +1387,11 @@ class AICore:
                                         needs_confirmation=lambda a: len(a.get("media_ids") or []) > 10))
         self.registry.register(ToolSpec("export_pdf", "план или стратегия в PDF",
                                         {"kind": str, "dest": str}, self.tools.export_pdf))
+        self.registry.register(ToolSpec("import_materials", "импорт файлов в «Материалы»",
+                                        {"paths": list, "folder": str},
+                                        self.tools.import_materials))
+        self.registry.register(ToolSpec("delete_material", "убрать материал из списка",
+                                        {"item_id": str}, self.tools.delete_material))
         self.registry.register(ToolSpec("export_package", "пакет публикаций за период",
                                         {"date_from": str, "date_to": str, "dest": str},
                                         self.tools.export_package,

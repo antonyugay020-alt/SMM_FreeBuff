@@ -171,7 +171,8 @@ CREATE TABLE IF NOT EXISTS other_files (
     kind   TEXT,
     size   TEXT,
     date   TEXT,
-    tags   TEXT
+    tags   TEXT,
+    path   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS actions_log (
@@ -381,7 +382,7 @@ class ProjectStore:
 
     def _ensure_columns(self) -> None:
         """Add columns introduced after the first projects were created."""
-        added = {"content_plan": {"caption": "TEXT"}}
+        added = {"content_plan": {"caption": "TEXT"}, "other_files": {"path": "TEXT"}}
         for table, columns in added.items():
             have = {row["name"] for row in
                     self.conn.execute(f"PRAGMA table_info({table})")}
@@ -564,11 +565,11 @@ class ProjectStore:
                     other_rows.append((
                         item.get("id") or f"of_{folder}_{index:03d}", folder, item.get("name"),
                         item.get("type"), item.get("size"), _iso(item.get("date")),
-                        _json_or_none(item.get("tags") or []),
+                        _json_or_none(item.get("tags") or []), item.get("path"),
                     ))
             conn.executemany(
-                "INSERT INTO other_files(id, folder, name, kind, size, date, tags)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)", other_rows)
+                "INSERT INTO other_files(id, folder, name, kind, size, date, tags, path)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", other_rows)
 
     # --- load ---
 
@@ -686,8 +687,9 @@ class ProjectStore:
         other_files: Dict[str, List[Dict[str, Any]]] = {}
         for row in conn.execute("SELECT * FROM other_files ORDER BY folder, date, id"):
             other_files.setdefault(row["folder"], []).append({
-                "name": row["name"], "type": row["kind"], "size": row["size"],
-                "date": _display(row["date"]), "tags": _loads(row["tags"], []),
+                "id": row["id"], "name": row["name"], "type": row["kind"],
+                "size": row["size"], "date": _display(row["date"]),
+                "tags": _loads(row["tags"], []), "path": row["path"] or "",
             })
 
         return {

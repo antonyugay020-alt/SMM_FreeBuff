@@ -44,6 +44,14 @@ def _find_font() -> Optional[str]:
     return None
 
 
+def _font_or_raise() -> str:
+    """TTF с кириллицей или понятная ошибка вместо PDF из квадратов."""
+    font = _find_font()
+    if not font:
+        raise RuntimeError(_FONT_ERROR)
+    return font
+
+
 _FONT_ERROR = ("Не найден системный шрифт с поддержкой кириллицы "
                "(Arial / Tahoma / DejaVu). Укажи путь в FONT_CANDIDATES.")
 _LIB_ERROR = "Для экспорта PDF нужна библиотека. Установи:\n\n    pip install fpdf2"
@@ -69,9 +77,7 @@ def check_dependencies() -> str:
 
 def export_shooting_task_pdf(task: Dict[str, Any], data_manager, output_path: str) -> str:
     """Generate a TZ PDF for a shooting task. Returns the saved path."""
-    font = _find_font()
-    if not font:
-        raise RuntimeError(_FONT_ERROR)
+    font = _font_or_raise()
 
     if HAS_FPDF:
         return _export_fpdf(task, data_manager, output_path, font)
@@ -365,23 +371,14 @@ def _table_rows(pdf, columns, rows) -> None:
     for row in rows:
         pdf.set_text_color(20, 24, 33)
         for width, key, _ in columns:
-            limit = 60 if key == "topic" else 60 if key == "metric" else 24
+            limit = 60 if key in ("topic", "metric") else 24
             pdf.cell(width, 6, _short(row.get(key), limit), border=1)
         pdf.ln()
 
 
-def _empty_note(pdf, text: str) -> None:
-    pdf.ln(2)
-    pdf.set_font("Body", "", 9)
-    pdf.set_text_color(90, 98, 110)
-    pdf.cell(USABLE, 6, text, new_x="LMARGIN", new_y="NEXT")
-
-
 def export_content_plan_pdf(data_manager, output_path: str) -> str:
     """Контент-план одной таблицей: дата, тема, рубрика, формат, статус."""
-    font = _find_font()
-    if not font:
-        raise RuntimeError(_FONT_ERROR)
+    font = _font_or_raise()
     items = list(data_manager.get_content_plan())
     project = _project_name(data_manager)
     pdf = _new_document(font)
@@ -390,8 +387,6 @@ def export_content_plan_pdf(data_manager, output_path: str) -> str:
                    f"позиций: {len(items)}")
     _table_head(pdf, PLAN_COLUMNS)
     _table_rows(pdf, PLAN_COLUMNS, items)
-    if not items:
-        _empty_note(pdf, "План пуст: добавьте позиции в разделе «Контент-план».")
     _document_footer(pdf, project, "план публикаций")
     pdf.output(str(output_path))
     logger.info(f"Content plan PDF: {output_path}")
@@ -400,9 +395,7 @@ def export_content_plan_pdf(data_manager, output_path: str) -> str:
 
 def export_strategy_pdf(data_manager, output_path: str) -> str:
     """Стратегия текстом по блокам плюс таблица KPI."""
-    font = _find_font()
-    if not font:
-        raise RuntimeError(_FONT_ERROR)
+    font = _font_or_raise()
     strategy = (data_manager.get_strategy() or {}) if data_manager else {}
     sections = strategy.get("sections") or []
     kpis = strategy.get("kpis") or []
@@ -420,15 +413,16 @@ def export_strategy_pdf(data_manager, output_path: str) -> str:
         pdf.set_text_color(40, 46, 58)
         pdf.multi_cell(USABLE, 5, str(section.get("content") or "—"))
         pdf.ln(3)
-    if not sections:
-        _empty_note(pdf, "Стратегии пока нет: создайте её на шаге «Стратегия».")
 
     pdf.ln(2)
     _fpdf_section(pdf, USABLE, "KPI")
     _table_head(pdf, KPI_COLUMNS)
     _table_rows(pdf, KPI_COLUMNS, kpis)
     if not kpis:
-        _empty_note(pdf, "KPI не заданы.")
+        pdf.ln(2)
+        pdf.set_font("Body", "", 9)
+        pdf.set_text_color(90, 98, 110)
+        pdf.cell(USABLE, 6, "KPI не заданы.", new_x="LMARGIN", new_y="NEXT")
 
     _document_footer(pdf, project, "стратегия")
     pdf.output(str(output_path))

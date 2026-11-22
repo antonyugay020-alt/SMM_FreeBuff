@@ -1,7 +1,6 @@
 """Plans and schemes: PDF export of the content plan and of the strategy."""
 from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QFileDialog, QMessageBox)
-from PySide6.QtCore import Qt
 
 from gui_sections.section_base import DataSection
 from gui_theme import TEXT, MUTED, BORDER, PANEL
@@ -48,8 +47,12 @@ class PlansSection(DataSection):
         hint.setStyleSheet(f"color: {MUTED}; font-size: 11px; padding: 10px 16px 4px 16px;")
         layout.addWidget(hint)
 
+        cards = QVBoxLayout()
+        cards.setContentsMargins(16, 6, 16, 6)
+        cards.setSpacing(6)
         for kind, title_text, description, button_text in DOCS:
-            layout.addWidget(self._card(kind, title_text, description, button_text))
+            cards.addWidget(self._card(kind, title_text, description, button_text))
+        layout.addLayout(cards)
         layout.addStretch()
 
     def _card(self, kind: str, title_text: str, description: str, button_text: str) -> QFrame:
@@ -60,7 +63,7 @@ class PlansSection(DataSection):
         box.setContentsMargins(16, 12, 16, 12)
         box.setSpacing(4)
         box.addWidget(self._label(title_text, TEXT, 13, bold=True))
-        box.addWidget(self._label(description, MUTED, 11, wrap=True))
+        box.addWidget(self._label(description, MUTED, 11))
         details = self._label("", TEXT, 11)
         self._details[kind] = details
         box.addWidget(details)
@@ -71,22 +74,15 @@ class PlansSection(DataSection):
         row.addWidget(button)
         row.addStretch()
         box.addLayout(row)
-        wrap = QFrame()
-        wrap.setStyleSheet("QFrame { border: none; background: transparent; }")
-        outer = QVBoxLayout(wrap)
-        outer.setContentsMargins(16, 6, 16, 6)
-        outer.addWidget(card)
-        return wrap
+        return card
 
     @staticmethod
-    def _label(text: str, color: str, size: int, bold: bool = False,
-               wrap: bool = False) -> QLabel:
+    def _label(text: str, color: str, size: int, bold: bool = False) -> QLabel:
         label = QLabel(text)
         weight = " font-weight: 700;" if bold else ""
+        label.setWordWrap(True)
         label.setStyleSheet(f"color: {color}; font-size: {size}px;{weight}"
                             " background: transparent; border: none;")
-        if wrap:
-            label.setWordWrap(True)
         return label
 
     # --- data ---
