@@ -6,8 +6,9 @@ from typing import Callable, Optional
 from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
     QComboBox, QInputDialog, QMessageBox, QDialog, QDialogButtonBox, QFormLayout,
-    QLineEdit, QTextEdit, QApplication)
-from PySide6.QtCore import Qt, QTimer
+    QLineEdit, QTextEdit, QApplication, QListWidget, QListWidgetItem, QToolButton)
+from PySide6.QtCore import Qt, QSize, QTimer
+from PySide6.QtGui import QIcon
 
 from ai_core import CAPTION_LIMIT, NO_DATE, collect_plan_issues
 from gui_sections.section_base import DataSection
@@ -20,15 +21,73 @@ COLUMNS = ["Дата", "Рубрика", "Тема", "Формат", "Стату
            "ТЗ", "Подпись"]
 
 
+def media_icon(record: Dict[str, Any], size: int = 72) -> QIcon:
+    """Миниатюра материала: фото или кадр видео; нет кадра — пустая иконка."""
+    try:
+        from gui_sections.publications_section import _pixmap_for
+        pixmap = _pixmap_for(record)
+    except Exception:
+        pixmap = None
+    if pixmap is None or pixmap.isNull():
+        return QIcon()
+    return QIcon(pixmap.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+
+class MediaPickerDialog(QDialog):
+    """Выбор готовых фото и видео для поста."""
+
+    def __init__(self, media: List[Dict[str, Any]], selected: List[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Медиа поста")
+        self.setMinimumSize(560, 420)
+        layout = QVBoxLayout(self)
+        hint = QLabel("Отметьте материалы, которые идут с постом:")
+        hint.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        layout.addWidget(hint)
+        self.list = QListWidget()
+        self.list.setViewMode(QListWidget.IconMode)
+        self.list.setIconSize(QSize(96, 96))
+        self.list.setResizeMode(QListWidget.Adjust)
+        self.list.setMovement(QListWidget.Static)
+        for record in media:
+            name = str(record.get("name") or record.get("id") or "материал")
+            entry = QListWidgetItem(media_icon(record, 96),
+                                    f"{name}\n{record.get('type') or ''}".strip())
+            entry.setData(Qt.UserRole, str(record.get("id") or ""))
+            entry.setFlags(entry.flags() | Qt.ItemIsUserCheckable)
+            entry.setCheckState(Qt.Checked if str(record.get("id")) in selected
+                                else Qt.Unchecked)
+            self.list.addItem(entry)
+        layout.addWidget(self.list, stretch=1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Применить")
+        buttons.button(QDialogButtonBox.Cancel).setText("Отмена")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def chosen(self) -> List[str]:
+        result = []
+        for row in range(self.list.count()):
+            entry = self.list.item(row)
+            if entry.checkState() == Qt.Checked:
+                result.append(str(entry.data(Qt.UserRole) or ""))
+        return [item_id for item_id in result if item_id]
+
+
 class PostDialog(QDialog):
-    """Ручная правка одного поста: поля плана и текст подписи."""
+    """Ручная правка одного поста: поля плана, текст подписи и медиа."""
 
     def __init__(self, item: Dict[str, Any], strategies: List[Dict[str, Any]],
-                 generate: Optional[Callable[[], str]] = None, parent=None):
+                 generate: Optional[Callable[[], str]] = None,
+                 media: Optional[List[Dict[str, Any]]] = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Пост")
         self.setMinimumWidth(600)
         self._generate = generate
+        self._media_all = list(media or [])
+        self._media_ids = [str(one) for one in (item.get("media_ids") or [])]
+        self.dangling_strategy = False
         self._build_ui(item, strategies)
 
     @staticmethod
@@ -81,11 +140,40 @@ class PostDialog(QDialog):
                                   str(section.get("id") or ""))
         current = str(item.get("strategy_link") or "")
         index = self.strategy.findData(current)
-        if index < 0:
-            index = self.strategy.findText(current) or 0
+        if current and index < 0:
+            # раздел удалён — связь не теряем, показываем её отдельным пунктом
+            self.strategy.addItem(f"{current} — раздел удалён", current)
+            index = self.strategy.count() - 1
+            self.dangling_strategy = True
         self.strategy.setCurrentIndex(max(index, 0))
         form.addRow("Стратегия", self.strategy)
         layout.addLayout(form)
+        if self.dangling_strategy:
+            warning = QLabel(f"Раздел стратегии «{current}» удалён: связь сохранена. "
+                             "Выберите другой раздел или пункт «—», чтобы отвязать пост.")
+            warning.setWordWrap(True)
+            warning.setStyleSheet("color: #f87171; font-size: 11px;")
+            layout.addWidget(warning)
+
+        media_head = QHBoxLayout()
+        media_title = QLabel("Медиа")
+        media_title.setStyleSheet(f"color: {TEXT}; font-weight: 700;")
+        media_head.addWidget(media_title)
+        self.media_count = QLabel("")
+        self.media_count.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        media_head.addWidget(self.media_count)
+        media_head.addStretch()
+        pick_btn = QPushButton("Прикрепить…")
+        pick_btn.setObjectName("topBtn")
+        pick_btn.clicked.connect(self._on_pick_media)
+        media_head.addWidget(pick_btn)
+        layout.addLayout(media_head)
+        self.media_hint = QLabel("Нажмите на миниатюру, чтобы убрать материал")
+        self.media_hint.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        layout.addWidget(self.media_hint)
+        self.media_row = QHBoxLayout()
+        layout.addLayout(self.media_row)
+        self._render_media()
 
         head = QHBoxLayout()
         title = QLabel("Подпись")
@@ -123,6 +211,45 @@ class PostDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    # --- медиа поста ---
+    def _media_record(self, media_id: str) -> Optional[Dict[str, Any]]:
+        return next((record for record in self._media_all
+                     if str(record.get("id")) == media_id), None)
+
+    def _apply_media(self, media_ids: List[str]) -> None:
+        self._media_ids = [str(one) for one in media_ids if str(one)]
+        self._render_media()
+
+    def _remove_media(self, media_id: str) -> None:
+        self._apply_media([one for one in self._media_ids if one != media_id])
+
+    def _on_pick_media(self) -> None:
+        dialog = MediaPickerDialog(self._media_all, self._media_ids, self)
+        if dialog.exec() == QDialog.Accepted:
+            self._apply_media(dialog.chosen())
+
+    def _render_media(self) -> None:
+        while self.media_row.count():
+            entry = self.media_row.takeAt(0)
+            widget = entry.widget()
+            if widget is not None:
+                widget.deleteLater()
+        for media_id in self._media_ids:
+            record = self._media_record(media_id) or {}
+            name = str(record.get("name") or media_id)
+            button = QToolButton()
+            button.setIcon(media_icon(record, 72))
+            button.setIconSize(QSize(72, 72))
+            button.setText(name if len(name) <= 14 else name[:12] + "…")
+            button.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+            button.setToolTip(f"{name} — нажмите, чтобы убрать")
+            button.clicked.connect(lambda _=False, mid=media_id: self._remove_media(mid))
+            self.media_row.addWidget(button)
+        self.media_row.addStretch()
+        count = len(self._media_ids)
+        self.media_count.setText(f"{count} шт." if count else "нет материалов")
+        self.media_hint.setVisible(bool(count))
+
     def _update_counter(self) -> None:
         length = len(self.caption.toPlainText())
         color = "#f87171" if length > CAPTION_LIMIT else MUTED
@@ -154,6 +281,7 @@ class PostDialog(QDialog):
                 "status": self.status.currentText().strip(),
                 "responsible": self.responsible.text().strip(),
                 "strategy_link": str(self.strategy.currentData() or "").strip(),
+                "media_ids": list(self._media_ids),
                 "caption": self.caption.toPlainText().strip()}
 
 
@@ -352,12 +480,18 @@ class ContentPlanSection(DataSection):
         item = self.dm.get_content_plan_item(item_id) if self.dm else None
         if not item:
             return None
+        media = list(self.dm.get_media_ready()) if self.dm else []
         return PostDialog(item, self._strategy_sections(),
-                          self._generate_caption(item_id), self)
+                          self._generate_caption(item_id), media, self)
 
     def _save_dialog(self, item_id: str, dialog: PostDialog) -> bool:
         """Сохранить поля из диалога и обновить таблицу."""
-        self.status.setText(self.update("content_plan", item_id, dialog.values()))
+        values = dialog.values()
+        text = self.update("content_plan", item_id, values)
+        link = str(values.get("strategy_link") or "")
+        if dialog.dangling_strategy and link:
+            text = f"{text} · связь со стратегией {link} сохранена (раздел удалён)"
+        self.status.setText(text)
         self.refresh()
         return True
 
