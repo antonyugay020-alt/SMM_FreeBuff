@@ -1118,3 +1118,10 @@ GUI:
 - Отдельно: фраза «проверь публикацию материала m1» ловится правилом `validate_plan` (проверка плана), до публикации не доходит — это прежняя приоритетность правил, не регресс.
 - Две мои ошибки в тесте по ходу: стаб отдаёт один ответ, поэтому `route` и `handle` нельзя звать на одном экземпляре; фраза с «проверь публикацию» уходила в чужое правило. Исправлено.
 - Прогоны — все 0: t_publish_route, t_publish_notoken, t_refusals, t_topic_title, t_caption_len, t_topics, t_thinking, t_readonly, t_cardread, t_fixes, d2/d3/d4, step5–step13, c1–c5, processed, validate, legacy_val, smoke_chain, compileall. acceptance_live в облаке — 2 (нет Ollama, как и раньше).
+
+## 22.11.2026 — правило «опубликуй материал <id>» и тесты публикации в репозитории
+- В `_rules` добавлено детерминированное правило: глагол «опублику/запости/publish» + id материала → `instagram_publish` с `media_id`, без обращения к модели. id берётся после слова «материал/медиа/файл/media», иначе ищется известный id в тексте; `dry_run` не подставляется (default «1»), а «без проверки», «по-настоящему», «вживую», «dry_run=0» дают `dry_run="0"`.
+- `AIRouter` не имел доступа к данным: добавлен `media_getter` (по образцу `plan_getter`) и метод `dm_media()`.
+- Проверено правилом: «опубликуй материал m1» → rules/instagram_publish {media_id m1}, «Опубликуй материал m1 без проверки» → dry_run 0, «запости материал me_ab12cd» → id разобран, «опубликуй материал» без id → правило молчит, «подготовь публикацию в инстаграм» → по-прежнему instagram_pack, «проверь публикацию…» → validate_plan.
+- Тесты публикации перенесены в репозиторий: `work/tests/` — test_host_media (D2), test_token_store (D3), test_publish (D4 + гейт), test_publish_notoken, test_publish_route (маршрут с правилом). Одна команда: `python work/tests/run_publish_tests.py` → «тестов: 5, провалов: 0».
+- По ходу переноса поправил путь: копии передавали `Path` в `sys.path`, нужен `str(ROOT)`.

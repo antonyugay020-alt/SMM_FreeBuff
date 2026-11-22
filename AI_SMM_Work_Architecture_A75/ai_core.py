@@ -1750,6 +1750,14 @@ class AIRouter:
                                  "rules")
         if re.search(r"проверь.{0,20}(доступ|инстаграм|instagram)|доступ к инстаграм", low):
             return RouteDecision("instagram_status", {}, "rules")
+        if re.search(r"опублику\w*|запости\w*|publish", low):
+            media_id = self._publish_media_id(text)
+            if media_id:
+                args = {"media_id": media_id}
+                if re.search(r"без проверки|без dry|по-настоящему|реально|вживую|действительно"
+                             r"|dry_run\s*[=:]\s*(0|false|нет)", low):
+                    args["dry_run"] = "0"
+                return RouteDecision("instagram_publish", args, "rules")
         if re.search(r"календар", low) and re.search(r"добав|перенес|синхрон|расстав|постав", low):
             return RouteDecision("sync_plan_events", {}, "rules")
         if re.search(r"календар", low) and re.search(r"покажи|открой|посмотри|что в|какие|список", low):
@@ -1984,6 +1992,20 @@ class AIRouter:
             return "", f"В плане {len(items)} позиций — номера {number} нет."
         return self._latest_plan_id(), ""
 
+    def _publish_media_id(self, text: str) -> str:
+        """id материала из фразы «опубликуй материал <id>»: после ключевого слова или известный id в тексте."""
+        known = {str(record.get("id")) for record in self.dm_media() if record.get("id")}
+        match = re.search(r"(?:материал\w*|медиа|файл\w*|media)\s*[№#:]?\s*([\w\-]{1,40})",
+                          text, re.IGNORECASE)
+        if match:
+            candidate = match.group(1)
+            if candidate in known or re.search(r"[0-9_]", candidate):
+                return candidate
+        for media_id in sorted(known):
+            if re.search(rf"(?<!\w){re.escape(media_id)}(?!\w)", text):
+                return media_id
+        return ""
+
     def _latest_plan_without_task(self) -> str:
         for item in reversed(self.dm_plan()):
             if not item.get("shooting_task_id"):
@@ -1992,6 +2014,9 @@ class AIRouter:
 
     def dm_plan(self) -> List[Dict[str, Any]]:
         return list(getattr(self, "plan_getter", lambda: [])())
+
+    def dm_media(self) -> List[Dict[str, Any]]:
+        return list(getattr(self, "media_getter", lambda: [])())
 
 
 def _first_int(text: str) -> Optional[int]:
@@ -2128,6 +2153,8 @@ class AICore:
         self.router = AIRouter(self.registry, settings, self.budget, dm.project_id,
                                self.local, self.cloud,
                                system_context=self._context_text)
+        self.router.media_getter = lambda: (dm.get_media_sources() + dm.get_media_ready()
+                                            + dm.get_media_references())
         self.router.plan_getter = dm.get_content_plan
         self.router.profile_getter = dm.get_brand_profile
         self.router.strategy_getter = dm.get_strategy
