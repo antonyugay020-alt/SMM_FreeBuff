@@ -1109,3 +1109,12 @@ GUI:
 - `needs_confirmation` перевёрнут на правильную сторону: вопрос «да/нет» только когда `dry_run` в `("0","false","нет")`, то есть перед реальной публикацией; dry-run по умолчанию идёт без вопроса. Повтор (`again`) требует `dry_run=0`, чтобы вообще опубликовать, поэтому тоже попадает под вопрос.
 - В `/tmp/d4_test.py` добавлен блок 10 из пяти утверждений: dry-run и dry_run=1 — без вопроса, dry_run=0 — вопрос, dry_run=0+again=1 — вопрос, dry_run=«нет» — вопрос. D4_GATE_DONE напечатан.
 - Проверки: d4_test 0 (все D4_OK + пять гейтов), t_publish_notoken 0 (наблюдение теперь «dry-run 1 → False | dry-run 0 → True»), t_refusals 0, compileall 0, t_topic_title/t_caption_len/t_topics/t_thinking/t_readonly/t_cardread/t_fixes 0, d2/d3, step5–step13, c1–c5, processed, validate, legacy_val, smoke_chain — 0.
+
+## 22.11.2026 — маршрут публикации через чат
+- Новый тест `.scratch/t_publish_route.py`: текст → `router.route` → `handle` → гейт → инструмент, на подставном Graph API и `StubProvider`.
+- Установлено: правила `_rules` публикацию не ловят («опубликуй материал m1» → None), маршрут идёт через модель (слой 2). Модель возвращает `instagram_publish` с `media_id`, `dry_run` не подставляет — его подставляет сам инструмент значением «1».
+- `handle("опубликуй материал m1")` → «Проверка прошла, публикация не запущена: p.jpg: @studio, IMAGE, осталось 47 из 50», `needs_confirmation=False`, ни одного POST на /media.
+- `dry_run=0` → «Подтвердите: «да» или «нет»», сети нет; «да» → «Опубликовал p.jpg (id ig_999)» с контейнером и media_publish. Явный `dry_run=1` — без вопроса. `again=1` + `dry_run=0` — вопрос. «нет» — отмена.
+- Отдельно: фраза «проверь публикацию материала m1» ловится правилом `validate_plan` (проверка плана), до публикации не доходит — это прежняя приоритетность правил, не регресс.
+- Две мои ошибки в тесте по ходу: стаб отдаёт один ответ, поэтому `route` и `handle` нельзя звать на одном экземпляре; фраза с «проверь публикацию» уходила в чужое правило. Исправлено.
+- Прогоны — все 0: t_publish_route, t_publish_notoken, t_refusals, t_topic_title, t_caption_len, t_topics, t_thinking, t_readonly, t_cardread, t_fixes, d2/d3/d4, step5–step13, c1–c5, processed, validate, legacy_val, smoke_chain, compileall. acceptance_live в облаке — 2 (нет Ollama, как и раньше).
