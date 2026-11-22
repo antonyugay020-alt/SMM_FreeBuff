@@ -18,6 +18,11 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent / "AI_SMM_Work_Architecture_A75"
+if not (ROOT / "ai_core.py").is_file():
+    print(f"Не нашёл код приложения: {ROOT}")
+    print("Скрипт должен лежать в папке work рядом с AI_SMM_Work_Architecture_A75.")
+    print("Запуск из папки проекта: .\\AI_SMM_Work_Architecture_A75\\.venv\\Scripts\\python.exe .\\work\\acceptance_live.py")
+    raise SystemExit(2)
 sys.path.insert(0, str(ROOT))
 
 from ai_core import AICore, OllamaProvider  # noqa: E402
