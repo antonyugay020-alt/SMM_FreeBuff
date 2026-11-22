@@ -932,33 +932,78 @@ class AITools:
         return self._mutate("content_plan", apply_plan)
 
     def create_shooting_task(self, plan_id: str = "") -> Dict[str, Any]:
+        """ТЗ для позиции; без `plan_id` — для всех позиций, у которых ТЗ ещё нет."""
+        plan = self.dm.get_content_plan()
+        if not plan:
+            return {"summary": "В плане нет позиций — для ТЗ сначала нужен контент-план.",
+                    "effect": {}, "undo": {}}
+        if plan_id:
+            targets = [plan_id]
+        else:
+            targets = [str(item.get("id")) for item in plan if not item.get("shooting_task_id")]
+        if not targets:
+            return {"summary": "ТЗ уже есть у всех позиций.", "effect": {}, "undo": {}}
         before_tasks = copy.deepcopy(self.dm.get_shooting_tasks())
         before_events = copy.deepcopy(self.dm.get_calendar_events())
         before_plan = copy.deepcopy(self.dm.get_content_plan())
-        task = self.dm.create_shooting_task_from_content_plan(plan_id)
-        if not task:
-            return {"summary": f"Позиция {plan_id} не найдена", "effect": {}, "undo": {}}
-        return {"summary": f"Создал ТЗ {task.get('id')} на {task.get('date')}",
-                "effect": {"task_id": task.get("id")},
+        created = []
+        for one in targets:
+            task = self.dm.create_shooting_task_from_content_plan(one)
+            if task:
+                created.append(task.get("id"))
+        if not created:
+            return {"summary": f"Позиция {plan_id or targets[0]} не найдена",
+                    "effect": {}, "undo": {}}
+        return {"summary": f"Создал ТЗ: {len(created)} из {len(targets)} позиций",
+                "effect": {"task_ids": created},
                 "undo": {"op": "restore_sections",
                          "sections": {"shooting_tasks": before_tasks,
                                       "content_plan": before_plan,
                                       "calendar_events": before_events}}}
 
     def write_captions(self, plan_id: str = "") -> Dict[str, Any]:
-        item = self.dm.get_content_plan_item(plan_id)
-        if not item:
-            return {"summary": f"Позиция {plan_id} не найдена", "effect": {}, "undo": {}}
-        brief = f"тема: {item.get('topic')}; рубрика: {item.get('rubric')}"
+        """Подпись к позиции; без `plan_id` — ко всем позициям, где подписи ещё нет."""
+        plan = self.dm.get_content_plan()
+        if not plan:
+            return {"summary": "В плане нет позиций — сначала создайте контент-план.",
+                    "effect": {}, "undo": {}}
+        if plan_id:
+            item = self.dm.get_content_plan_item(plan_id)
+            if not item:
+                return {"summary": f"Позиция {plan_id} не найдена", "effect": {}, "undo": {}}
+            targets = [item]
+        else:
+            targets = [item for item in plan if not str(item.get("caption") or "").strip()]
+        if not targets:
+            return {"summary": "Подписи уже есть у всех позиций.", "effect": {}, "undo": {}}
+
+        written: List[tuple] = []
+        failed = 0
+        for item in targets:
+            caption = self.router.write_caption(
+                f"тема: {item.get('topic')}; рубрика: {item.get('rubric')}")
+            if caption:
+                written.append((str(item.get("id")), caption))
+            else:
+                failed += 1
+        if not written:
+            return {"summary": ("Подписи не написаны: нужна локальная модель (Ollama) или облако. "
+                               "Подписи можно вписать вручную в карточке поста."),
+                    "effect": {}, "undo": {}}
+
+        captions = dict(written)
 
         def apply(current: List[Dict[str, Any]]) -> Dict[str, Any]:
             for entry in current:
-                if entry.get("id") == plan_id:
-                    entry["caption"] = self.router.write_caption(brief)
-                    return {"summary": "Подпись готова", "effect": {"plan_id": plan_id}}
-            return {"summary": "Позиция не найдена", "effect": {}}
+                if str(entry.get("id")) in captions:
+                    entry["caption"] = captions[str(entry.get("id"))]
+            return {"summary": f"Подписи готовы: {len(written)} из {len(targets)}",
+                    "effect": {"plan_ids": [one for one, _ in written]}}
 
-        return self._mutate("content_plan", apply)
+        out = self._mutate("content_plan", apply)
+        if failed:
+            out["summary"] = f"{out.get('summary', '')} (не удалось: {failed})".strip()
+        return out
 
     MEDIA_ZONES = {"sources": "media_sources", "references": "media_references",
                    "ready": "media_ready"}
@@ -1746,6 +1791,107 @@ def _provider_ready(provider) -> bool:
     return bool(available)
 
 
+AGENT_STEPS = 6
+AGENT_DENY = {"instagram_publish", "host_media", "instagram_status", "undo_last",
+              "show_journal", "send_message"}
+AGENT_SYSTEM = (
+    "Ты — AI SMM Manager. Ты сам выполняешь задачу по шагам, вызывая инструменты. "
+    "Смотри на состояние проекта и на то, что уже сделано, и выбирай следующий шаг. "
+    "Не спрашивай разрешения на обычную работу (стратегия, план, подписи, ТЗ, календарь, "
+    "проверки, выгрузки) — просто делай. Публикацию в Instagram выполняет только человек: "
+    "этих инструментов у тебя нет.\n"
+    "Ответь ТОЛЬКО одним JSON без пояснений:\n"
+    '{"action": "tool", "tool": "имя", "args": {…}}\n'
+    '{"action": "done", "say": "что сделано, коротко"}\n'
+    '{"action": "ask", "say": "чего не хватает и что сделать пользователю"}'
+)
+
+
+class AIAgent:
+    """Многошаговый исполнитель: модель выбирает инструменты по задаче и состоянию проекта."""
+
+    def __init__(self, core):
+        self.core = core
+        self.router = core.router
+        self.registry = core.registry
+
+    def _provider(self):
+        for candidate in (self.router.local, self.router.cloud):
+            if _provider_ready(candidate):
+                if getattr(candidate, "name", "") == "cloud" and self.router.budget is not None \
+                        and not self.router.budget.can_spend():
+                    continue
+                return candidate
+        return None
+
+    def tools_catalog(self) -> str:
+        lines = []
+        for name in self.registry.names():
+            if name in AGENT_DENY:
+                continue
+            spec = self.registry.get(name)
+            if spec is None:
+                continue
+            args = ", ".join(spec.args.keys())
+            lines.append(f"- {name}({args}): {getattr(spec, 'description', '') or ''}".strip())
+        return "\n".join(lines)
+
+    def project_state(self) -> str:
+        dm = self.core.dm
+        strategy = dm.get_strategy() or {}
+        plan = dm.get_content_plan()
+        captions = sum(1 for item in plan if str(item.get("caption") or "").strip())
+        tasks = sum(1 for item in plan if item.get("shooting_task_id"))
+        return (f"стратегия: блоков {len(strategy.get('sections') or [])}; "
+                f"контент-план: {len(plan)} позиций (с подписью {captions}, с ТЗ {tasks}); "
+                f"медиа готовых: {len(dm.get_media_ready())}; "
+                f"событий календаря: {len(dm.get_calendar_events())}; "
+                f"ТЗ: {len(dm.get_shooting_tasks())}")
+
+    def run(self, task: str) -> Optional[AIReply]:
+        """Выполнить задачу шагами. None — модель не умеет вести агент, нужен обычный слой."""
+        provider = self._provider()
+        if provider is None:
+            return None
+        history: List[str] = []
+        actions: List[Dict[str, Any]] = []
+        catalog = self.tools_catalog()
+        for step in range(AGENT_STEPS):
+            done_text = "\n".join(f"{number}. {line}" for number, line in enumerate(history, 1))
+            prompt = (f"Задача пользователя: {task}\n\n"
+                      f"Состояние проекта: {self.project_state()}\n\n"
+                      f"Уже сделано:\n{done_text or 'ничего'}\n\n"
+                      f"Доступные инструменты:\n{catalog}\n\n"
+                      "Выбери следующий шаг. Если задача выполнена — action=done.")
+            result = provider.chat(AGENT_SYSTEM, prompt, temperature=0.1, max_tokens=400)
+            if self.router.budget is not None:
+                self.router.budget.record(self.router.project_id, "agent", result)
+            data = _extract_json(result.text or "") or {}
+            kind = str(data.get("action") or "").strip().lower()
+            say = str(data.get("say") or "").strip()
+            if kind in ("done", "ask"):
+                return AIReply(say or "Готово.", "agent", actions)
+            tool = str(data.get("tool") or "").strip()
+            if not tool:
+                if step == 0:
+                    return None
+                return AIReply("Остановился: модель не дала следующий шаг.\n"
+                               + ("\n".join(history) or ""), "agent", actions)
+            if tool not in self.registry.names() or tool in AGENT_DENY:
+                history.append(f"{tool}: инструмент недоступен")
+                continue
+            spec = self.registry.get(tool)
+            raw_args = data.get("args") if isinstance(data.get("args"), dict) else {}
+            args = {key: value for key, value in raw_args.items() if key in spec.args}
+            reply = self.core._execute(tool, args, "agent")
+            actions.extend(reply.actions or [])
+            history.append(f"{tool}({json.dumps(args, ensure_ascii=False)}) — "
+                           f"{reply.text.splitlines()[0] if reply.text else 'готово'}")
+        tail = "\n".join(history[-4:])
+        return AIReply(f"Остановился на лимите шагов ({AGENT_STEPS}). Что успел:\n{tail}",
+                       "agent", actions)
+
+
 class AIRouter:
     """Turns text into a tool call. Never invents arguments silently."""
 
@@ -2354,7 +2500,14 @@ class AICore:
                 return AIReply("Отменил, ничего не записал.")
             self.pending = None
 
-        decision = self.router.route(text)
+        rules = self.router._rules(text)
+        if rules is not None and (rules.tool or rules.clarify):
+            decision = rules
+        else:
+            agent_reply = self._agent().run(text)
+            if agent_reply is not None:
+                return agent_reply
+            decision = self.router.route(text)
 
         if decision.tool == "undo_last":
             return self._undo_last()
@@ -2379,6 +2532,13 @@ class AICore:
                            decision.layer, needs_confirmation=True,
                            pending_tool=decision.tool, pending_args=decision.args)
         return self._execute(decision.tool, decision.args, decision.layer)
+
+    def _agent(self) -> "AIAgent":
+        agent = getattr(self, "_agent_instance", None)
+        if agent is None:
+            agent = AIAgent(self)
+            self._agent_instance = agent
+        return agent
 
     def _execute(self, tool: str, args: Dict[str, Any], layer: str) -> AIReply:
         spec = self.registry.get(tool)
