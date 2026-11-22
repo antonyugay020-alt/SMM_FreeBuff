@@ -1,9 +1,9 @@
 """Проверка: повторная обработка фото (один _web), прозрачность PNG, кадр-превью видео."""
+import atexit
 import sys, tempfile
 from pathlib import Path
 APP = Path(__file__).resolve().parents[2] / "AI_SMM_Work_Architecture_A75"
 PROJECT = APP.parent
-WORK = Path(tempfile.mkdtemp(prefix="smm_test_"))
 import os
 import shutil
 import stat
@@ -29,11 +29,15 @@ MEDIA.mkdir(parents=True, exist_ok=True)
 def cleanup():
     for path in MEDIA.glob("t7_*"):
         path.unlink(missing_ok=True)
-    for path in (MEDIA / ".thumbs").glob("t7_*"):
+    thumbs = MEDIA / ".thumbs"
+    for path in thumbs.glob("t7_*"):
         path.unlink(missing_ok=True)
+    if thumbs.is_dir() and not any(thumbs.iterdir()):
+        thumbs.rmdir()
 
 
 cleanup()
+atexit.register(cleanup)   # не оставлять файлы в media приложения даже при падении
 
 dm = DataManager("step7", data_dir=str(WORK / "proj"))
 core = AICore(dm, None, app_db_path=str(WORK / "app.db"))

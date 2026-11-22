@@ -3,7 +3,6 @@ import sys, tempfile
 from pathlib import Path
 APP = Path(__file__).resolve().parents[2] / "AI_SMM_Work_Architecture_A75"
 PROJECT = APP.parent
-WORK = Path(tempfile.mkdtemp(prefix="smm_test_"))
 import sys
 import tempfile
 from pathlib import Path

@@ -3,7 +3,7 @@ import sys, tempfile
 from pathlib import Path
 APP = Path(__file__).resolve().parents[2] / "AI_SMM_Work_Architecture_A75"
 PROJECT = APP.parent
-WORK = Path(tempfile.mkdtemp(prefix="smm_test_"))
+import atexit
 import shutil
 import sys
 import tempfile
@@ -22,6 +22,15 @@ app = QApplication.instance() or QApplication(sys.argv)
 WORK = Path(tempfile.mkdtemp(prefix="step8_"))
 MEDIA = PROJECT / "media" / "images"   # та же папка, что у приложения (ai_core.MEDIA_IMAGES)
 MEDIA.mkdir(parents=True, exist_ok=True)
+
+
+def cleanup():
+    for path in MEDIA.glob("t8_*"):
+        path.unlink(missing_ok=True)
+
+
+cleanup()
+atexit.register(cleanup)   # не оставлять файлы в media приложения даже при падении
 
 wide = MEDIA / "t8_wide.png"
 portrait = MEDIA / "t8_tall.png"
