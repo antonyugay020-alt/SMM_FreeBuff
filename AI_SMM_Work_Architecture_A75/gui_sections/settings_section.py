@@ -155,6 +155,10 @@ class SettingsSection(QWidget):
         self.instagram_status = QLabel("")
         self.instagram_status.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
         insta_form.addRow("Состояние", self.instagram_status)
+        self.cloudinary_status = QLabel("")
+        self.cloudinary_status.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        insta_form.addRow("Cloudinary", self.cloudinary_status)
+        self._load_cloudinary_state()
         box.addWidget(instagram)
 
         buttons = QHBoxLayout()
@@ -184,6 +188,17 @@ class SettingsSection(QWidget):
 
         root = Path(__file__).resolve().parent.parent.parent / "data" / "app.db"
         return instagram_auth.TokenStore(root)
+
+    def _load_cloudinary_state(self):
+        """Только наличие переменных окружения: значения не читаем и не показываем."""
+        import os
+
+        names = ("CLOUDINARY_CLOUD_NAME", "CLOUDINARY_API_KEY", "CLOUDINARY_API_SECRET")
+        missing = [name for name in names if not os.environ.get(name, "").strip()]
+        if missing:
+            self.cloudinary_status.setText("не заданы: " + ", ".join(missing))
+        else:
+            self.cloudinary_status.setText("переменные заданы")
 
     def _load_token_state(self):
         import instagram_auth
