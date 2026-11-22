@@ -56,22 +56,23 @@ class CloudinaryClient:
         text = "&".join(f"{key}={params[key]}" for key in sorted(params))
         return hashlib.sha1((text + self.api_secret).encode("utf-8")).hexdigest()
 
+    def _signed(self, **extra: str) -> Dict[str, str]:
+        """Поля запроса: подписываются только `timestamp` и `extra`, ключ не подписывается."""
+        params = {"timestamp": str(int(time.time())), **extra}
+        return {**params, "api_key": self.api_key, "signature": self._sign(params)}
+
     def upload(self, file_path: str, public_id: str) -> Dict[str, Any]:
         """Загрузить файл; возвращает {"url", "public_id", "resource_type"}."""
         path = Path(file_path)
         if not path.is_file():
             raise CloudinaryError(f"файл не найден: {path.name}")
         resource_type = resource_type_for(path)
-        timestamp = str(int(time.time()))
-        params = {"timestamp": timestamp, "public_id": public_id}
-        data = {"api_key": self.api_key, "timestamp": timestamp,
-                "public_id": public_id, "signature": self._sign(params)}
         try:
             with path.open("rb") as handle:
                 response = requests.post(
                     f"{self.base}/{resource_type}/upload",
-                    data=data, files={"file": (path.name, handle)},
-                    timeout=180)
+                    data=self._signed(public_id=public_id),
+                    files={"file": (path.name, handle)}, timeout=180)
         except requests.RequestException as exc:
             raise CloudinaryError(f"сеть к Cloudinary недоступна: {exc}") from exc
         if response.status_code != 200:
@@ -88,13 +89,10 @@ class CloudinaryClient:
 
     def delete(self, public_id: str, resource_type: str = "image") -> bool:
         """Удалить загруженный ресурс; True, если удалился или его уже нет."""
-        timestamp = str(int(time.time()))
-        params = {"public_id": public_id, "timestamp": timestamp}
-        data = {"api_key": self.api_key, "timestamp": timestamp,
-                "public_id": public_id, "signature": self._sign(params)}
         try:
             response = requests.post(
-                f"{self.base}/{resource_type}/destroy", data=data, timeout=60)
+                f"{self.base}/{resource_type}/destroy",
+                data=self._signed(public_id=public_id), timeout=60)
         except requests.RequestException as exc:
             logger.warning("cloudinary delete failed: %s", exc)
             return False

@@ -903,3 +903,39 @@ GUI:
 - Живая проверка D2: загрузка настоящего файла с ключами Cloudinary на машине пользователя.
 
 Следующая модель: DeepSeek V4.1 Flash. Muse Spark 1.3 недоступна (только PRO) — в рекомендациях не использовать.
+
+### Сессия 31 — 22.11.2026 — модель: DeepSeek — ревью D2 + шаг D, D3 (токен и доступ)
+
+Ревью D2 (поведение не менялось):
+- `cloudinary_client`: подпись и поля запроса собирались дважды (upload и destroy) — теперь `_signed(**extra)`,
+  а `delete` и `upload` берут его; поведение то же (подписываются `timestamp` и `public_id`, `api_key` — нет).
+- `ai_core`: `_cloudinary(source)` с необязательным аргументом заменён на `_cloudinary_client()` (читает
+  `self.cloudinary`), `zone, record = found[0][1], found[0][2]` — на `_, zone, record = found[0]`.
+- Секреты: проверено, что в журнал и отчёты попадают только URL и `public_id`; текст ошибок Cloudinary
+  не содержит ключей. В D3 добавлен `_scrub()` — иначе `requests` вынес бы `access_token` из URL в сообщение.
+
+Сделано (D3):
+- `instagram_auth.py`: `TokenStore` (общая `data/app.db`, таблица `instagram_token`), Fernet-шифрование,
+  ключ из `AI_SMM_TOKEN_KEY` или `data/.token_key` (0600, в `.gitignore`), `mask()`, `check_access()`.
+- `ai_core`: `instagram_status()` — read-only проверка, журнал только при успехе (`undo = noop`); правило чата
+  «проверь доступ к инстаграму».
+- «Настройки»: поле токена с `EchoMode.Password`, кнопки «Сохранить токен», «Проверить доступ», «Забыть»,
+  строка состояния с маской и аккаунтом.
+- `requirements.txt`: `cryptography>=42.0.0`; `.gitignore`: `data/.token_key`.
+
+Проверено (headless):
+- `/tmp/d3_test.py` (`D3_OK`, 26 пунктов): плейнтекста в файле базы нет, ключ отдельно, перезапуск, чужой ключ,
+  env-ключ, маска, Business/Creator vs Personal, код 190, токен вычищен из ошибок и журнала, noop-откат,
+  подсказка без токена, кнопки «Настройки».
+- Регресс EXIT=0: `d2`, `c1`–`c5`, `processed`, `step6`, `step9`–`step13`, `validate_test`, `legacy_val_test`,
+  `smoke_chain`; `compileall` чистый.
+
+Трогались файлы: `instagram_auth.py` (новый), `ai_core.py`, `cloudinary_client.py`,
+`gui_sections/settings_section.py`, `requirements.txt`, `.gitignore`, `work/DECISIONS.md`, `work/PLAN.md`,
+`work/SESSION_LOG.md`.
+
+Осталось / следующий шаг:
+- D4: контейнер → публикация с подтверждением и dry-run; живая проверка токена и публикации — на машине пользователя.
+- Открытое: App Review/Advanced Access в кабинете Meta.
+
+Следующая модель: Claude Haiku 4.5 (D4 — необратимое действие; Muse Spark недоступна).

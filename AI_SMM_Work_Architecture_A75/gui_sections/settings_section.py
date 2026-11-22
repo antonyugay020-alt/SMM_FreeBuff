@@ -1,5 +1,6 @@
 """Settings: провайдеры моделей, бюджет, пути хранения, бэкапы."""
 import logging
+from pathlib import Path
 from typing import Any, Dict
 
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -122,6 +123,40 @@ class SettingsSection(QWidget):
         storage_form.addRow("Лимит хранилища", self.storage_limit)
         box.addWidget(storage)
 
+        # --- Instagram token (шаг D3): не в settings.json, а в app.db в зашифрованном виде ---
+        instagram = QFrame()
+        instagram.setObjectName("zone")
+        insta_form = QFormLayout(instagram)
+        insta_form.setContentsMargins(18, 16, 18, 16)
+        insta_form.setSpacing(10)
+
+        self.instagram_token = QLineEdit()
+        self.instagram_token.setObjectName("formInput")
+        self.instagram_token.setEchoMode(QLineEdit.Password)
+        self.instagram_token.setPlaceholderText("долгоживущий токен Instagram")
+        insta_form.addRow("Токен Instagram", self.instagram_token)
+
+        insta_row = QHBoxLayout()
+        insta_save = QPushButton("Сохранить токен")
+        insta_save.setObjectName("topBtn")
+        insta_save.clicked.connect(self._save_token)
+        insta_row.addWidget(insta_save)
+        insta_check = QPushButton("Проверить доступ")
+        insta_check.setObjectName("topBtn")
+        insta_check.clicked.connect(self._check_token)
+        insta_row.addWidget(insta_check)
+        insta_forget = QPushButton("Забыть")
+        insta_forget.setObjectName("topBtn")
+        insta_forget.clicked.connect(self._forget_token)
+        insta_row.addWidget(insta_forget)
+        insta_row.addStretch()
+        insta_form.addRow("", insta_row)
+
+        self.instagram_status = QLabel("")
+        self.instagram_status.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        insta_form.addRow("Состояние", self.instagram_status)
+        box.addWidget(instagram)
+
         buttons = QHBoxLayout()
         save_btn = QPushButton("Сохранить настройки")
         save_btn.setObjectName("topBtn")
@@ -140,6 +175,82 @@ class SettingsSection(QWidget):
         layout.addWidget(scroll)
 
         self._load_values()
+        self._load_token_state()
+
+    # --- Instagram token ---
+    def _token_store(self):
+        """Хранилище токена: общая база приложения, не база проекта и не settings.json."""
+        import instagram_auth
+
+        root = Path(__file__).resolve().parent.parent.parent / "data" / "app.db"
+        return instagram_auth.TokenStore(root)
+
+    def _load_token_state(self):
+        import instagram_auth
+
+        try:
+            store = self._token_store()
+            token = store.load_token()
+            account = store.account()
+        except Exception as exc:
+            self.instagram_status.setText(str(exc))
+            return
+        if not token:
+            self.instagram_status.setText("токен не сохранён")
+            return
+        who = account.get("username") or account.get("ig_user_id") or "аккаунт"
+        self.instagram_status.setText(f"сохранён {instagram_auth.mask(token)} · {who}")
+
+    def _save_token(self):
+        import instagram_auth
+
+        token = self.instagram_token.text().strip()
+        if not token:
+            self.instagram_status.setText("вставь токен в поле выше")
+            return
+        try:
+            store = self._token_store()
+            result = instagram_auth.check_access(token)
+            account = {"username": result.get("username", ""),
+                       "account_type": result.get("account_type", ""),
+                       "ig_user_id": result.get("ig_user_id", "")} if result.get("ok") else {}
+            store.save(token, account)
+        except Exception as exc:
+            self.instagram_status.setText(str(exc))
+            return
+        self.instagram_token.clear()
+        self._load_token_state()
+        if not account:
+            self.instagram_status.setText(self.instagram_status.text()
+                                          + f" · не проверен: {result.get('reason', '')}")
+
+    def _check_token(self):
+        import instagram_auth
+
+        try:
+            token = self._token_store().load_token()
+        except Exception as exc:
+            self.instagram_status.setText(str(exc))
+            return
+        if not token:
+            self.instagram_status.setText("токен не сохранён")
+            return
+        result = instagram_auth.check_access(token)
+        if result.get("ok"):
+            self.instagram_status.setText(
+                f"доступ есть: @{result.get('username')} ({result.get('account_type')})"
+                f" · {instagram_auth.mask(token)}")
+        else:
+            self.instagram_status.setText("нет доступа: " + str(result.get("reason") or ""))
+
+    def _forget_token(self):
+        try:
+            self._token_store().clear()
+        except Exception as exc:
+            self.instagram_status.setText(str(exc))
+            return
+        self.instagram_token.clear()
+        self._load_token_state()
 
     def _load_values(self):
         if not self.settings:

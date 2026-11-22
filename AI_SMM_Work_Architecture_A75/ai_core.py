@@ -393,6 +393,8 @@ class AITools:
         self.router = router_ref
         self.video = None  # VideoProcessor создаётся при первом обращении (тесты подставляют свой)
         self.cloudinary = None  # клиент хостинга для D2; без него — из переменных окружения
+        self.tokens = None  # TokenStore для D3; создаётся по app_db проекта
+        self.app_db_path: Optional[Path] = None
 
     # --- helpers ---
     def _bump_version(self, note: str, author: str = "AI") -> None:
@@ -1174,11 +1176,42 @@ class AITools:
                 "undo": {"op": "delete_folder", "path": str(folder)}}
 
     # --- Instagram: хостинг медиа (шаг D2) ---
-    @staticmethod
-    def _cloudinary(source: Optional[Any] = None):
-        """Клиент Cloudinary: подставленный объект или из переменных окружения."""
-        if source is not None:
-            return source
+    def _token_store(self):
+        """Хранилище токена Instagram в общей базе приложения (не в базе проекта)."""
+        if self.tokens is None:
+            import instagram_auth
+
+            path = self.app_db_path or Path(__file__).resolve().parent.parent / "data" / "app.db"
+            self.tokens = instagram_auth.TokenStore(path)
+        return self.tokens
+
+    def instagram_status(self) -> Dict[str, Any]:
+        """Read-only проверка доступа к Instagram: без публикации и без трат."""
+        import instagram_auth
+
+        try:
+            token = self._token_store().load_token()
+        except instagram_auth.TokenError as exc:
+            return {"summary": str(exc), "effect": {}, "undo": {}}
+        if not token:
+            return {"summary": "Токен Instagram не сохранён — впишите в «Настройках»",
+                    "effect": {}, "undo": {}}
+        result = instagram_auth.check_access(token)
+        if not result.get("ok"):
+            return {"summary": "Доступ не готов: " + str(result.get("reason") or "неизвестно"),
+                    "effect": {}, "undo": {}}
+        summary = (f"Доступ есть: @{result['username'] or result['ig_user_id']}"
+                   f" ({result['account_type']}), токен {instagram_auth.mask(token)}")
+        return {"summary": summary,
+                "effect": {"username": result["username"],
+                           "account_type": result["account_type"],
+                           "ig_user_id": result["ig_user_id"]},
+                "undo": NOOP_UNDO}
+
+    def _cloudinary_client(self):
+        """Клиент Cloudinary: подставленный (тест/будущий UI) или из переменных окружения."""
+        if self.cloudinary is not None:
+            return self.cloudinary
         import cloudinary_client
 
         return cloudinary_client.CloudinaryClient.from_env()
@@ -1189,12 +1222,12 @@ class AITools:
         if not found:
             return {"summary": f"Материал {media_id or '—'} не найден",
                     "effect": {}, "undo": {}}
-        client = self._cloudinary(self.cloudinary)
+        client = self._cloudinary_client()
         if client is None:
             return {"summary": "Нужны CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY и "
                                 "CLOUDINARY_API_SECRET — без них медиа некуда выложить",
                     "effect": {}, "undo": {}}
-        zone, record = found[0][1], found[0][2]
+        _, zone, record = found[0]
         path = Path(str(record.get("path") or ""))
         if not path.is_file():
             return {"summary": f"{record.get('name')}: файл не найден",
@@ -1438,7 +1471,7 @@ class AITools:
         """Убрать файл с хостинга при откате: без клиента говорим честно, что остался."""
         if not spec or not spec.get("public_id"):
             return ""
-        client = self._cloudinary(self.cloudinary)
+        client = self._cloudinary_client()
         if client is None:
             return f"файл на хостинге остался ({spec['public_id']}): нет ключей Cloudinary"
         if client.delete(str(spec["public_id"]), str(spec.get("resource_type") or "image")):
@@ -1513,6 +1546,8 @@ class AIRouter:
             return RouteDecision("export_pdf",
                                  {"kind": "strategy" if "стратег" in low else "plan"},
                                  "rules")
+        if re.search(r"проверь.{0,20}(доступ|инстаграм|instagram)|доступ к инстаграм", low):
+            return RouteDecision("instagram_status", {}, "rules")
         if re.search(r"инстаграм|instagram", low) and re.search(r"пакет|публикац|выгруз|собери|подготовь", low):
             return RouteDecision("instagram_pack", {}, "rules")
         if re.search(r"(собери|сделай|подготовь).{0,20}(пакет|выгруз)|экспорт", low):
@@ -1752,6 +1787,7 @@ class AICore:
         self.cloud = cloud_provider
 
         self.tools = AITools(dm, self)
+        self.tools.app_db_path = Path(app_db_path)
         self.registry = ToolRegistry()
         self._register_tools()
         self.router = AIRouter(self.registry, settings, self.budget, dm.project_id,
@@ -1822,6 +1858,9 @@ class AICore:
                                          "paths": list},
                                         self.tools.make_subtitles,
                                         needs_confirmation=lambda a: len(a.get("media_ids") or []) > 3))
+        self.registry.register(ToolSpec("instagram_status",
+                                        "проверить доступ к Instagram (read-only)",
+                                        {}, self.tools.instagram_status))
         self.registry.register(ToolSpec("host_media",
                                         "выложить материал на публичный URL для публикации",
                                         {"media_id": str}, self.tools.host_media))

@@ -10,3 +10,4 @@ config/settings.json
 *.db-shm
 data/projects/*/backups/
 media/images/.thumbs/
+data/.token_key
