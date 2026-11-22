@@ -209,4 +209,67 @@ ok("шаг без имени инструмента не закрыл задач
    len(dm.get_content_plan()))
 ok("итог после настоящего шага", "1 пост" in reply.text, reply.text)
 
+# --- после плана «готово» не принимается, пока нет подписей и ТЗ ---
+dm, core, stub = build([
+    '{"action": "tool", "tool": "create_content_plan", "args": {"count": 2}}',
+    '{"action": "done", "say": "Готово: план создан."}',
+    '{"action": "tool", "tool": "write_captions", "args": {}}',
+    '{"action": "tool", "tool": "create_shooting_task", "args": {}}',
+    '{"action": "done", "say": "Готово: план, подписи и ТЗ."}'])
+reply = core.handle("подготовь кофейне контент на неделю")
+plan = dm.get_content_plan()
+ok("после плана агент дописал подписи",
+   plan and all(str(item.get("caption") or "").strip() for item in plan),
+   [(item.get("topic"), item.get("caption")) for item in plan])
+ok("после плана агент сделал ТЗ",
+   plan and all(item.get("shooting_task_id") for item in plan),
+   [(item.get("topic"), item.get("shooting_task_id")) for item in plan])
+ok("модели сказано, что задача не закончена",
+   any("подписей" in text and "write_captions" in text for text in stub.calls),
+   stub.calls[-3:-1])
+ok("итог называет план, подписи и ТЗ", "ТЗ" in reply.text, reply.text)
+
+# --- если модель упёрлась в «готово», цепочка доводится сама ---
+dm, core, stub = build([
+    '{"action": "tool", "tool": "create_content_plan", "args": {"count": 2}}',
+    '{"action": "done", "say": "План готов."}',
+    '{"action": "done", "say": "План готов."}'])
+reply = core.handle("подготовь контент")
+plan = dm.get_content_plan()
+ok("упорное «готово» не оставило план без подписей",
+   plan and all(str(item.get("caption") or "").strip() for item in plan),
+   [(item.get("topic"), item.get("caption")) for item in plan])
+ok("упорное «готово» не оставило план без ТЗ",
+   plan and all(item.get("shooting_task_id") for item in plan),
+   [(item.get("topic"), item.get("shooting_task_id")) for item in plan])
+ok("сказано, что доделал сам", "Довёл до конца сам" in reply.text, reply.text)
+ok("слова модели не потеряны", "План готов" in reply.text, reply.text)
+ok("доделка попала в журнал",
+   {"write_captions", "create_shooting_task"} <= {entry["tool"] for entry in core.journal.list(10)},
+   [entry["tool"] for entry in core.journal.list(10)])
+
+# --- план без единого «готово» всё равно доводится до подписей и ТЗ ---
+dm, core, stub = build(
+    ['{"action": "tool", "tool": "create_content_plan", "args": {"count": 1}}'] * (AGENT_STEPS + 2))
+reply = core.handle("нужен контент")
+plan = dm.get_content_plan()
+ok("лимит шагов не оставил план без подписей",
+   plan and all(str(item.get("caption") or "").strip() for item in plan), reply.text)
+ok("лимит шагов не оставил план без ТЗ",
+   plan and all(item.get("shooting_task_id") for item in plan), reply.text)
+ok("лимит шагов назван честно", "лимите шагов" in reply.text or "Остановился" in reply.text,
+   reply.text)
+
+# --- стратегия из строк, а не словарей, не роняет инструмент ---
+dm, core, stub = build([
+    '{"action": "tool", "tool": "create_strategy", "args": {"sections": '
+    '["О проекте: кофейня у дома", "Аудитория: жители района"]}}',
+    '{"action": "done", "say": "Стратегия готова."}'])
+reply = core.handle("набросай стратегию для кофейни")
+sections = dm.get_strategy().get("sections") or []
+ok("стратегия из строк собрана", len(sections) == 2, sections)
+ok("заголовки строк разобраны", [one.get("title") for one in sections] == ["О проекте", "Аудитория"],
+   sections)
+ok("итог без падения инструмента", "Стратегия готова" in reply.text, reply.text)
+
 print("AGENT_DONE")

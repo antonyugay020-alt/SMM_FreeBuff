@@ -620,9 +620,24 @@ class AITools:
 
     def create_strategy(self, brief: str = "", sections: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         sections = sections or self.router.generate_strategy_sections(brief)
+        if isinstance(sections, dict):
+            sections = [sections]
         if not sections:
             return {"summary": "Не смог собрать стратегию: нужна локальная модель (Ollama) "
                                "или облако. Заполните бренд-профиль и повторите.",
+                    "effect": {}, "undo": {}}
+
+        # модель может прислать блоки строками («Название: текст») — это не повод падать
+        normalized: List[Dict[str, Any]] = []
+        for raw in sections:
+            if isinstance(raw, dict):
+                normalized.append(raw)
+            elif isinstance(raw, str) and raw.strip():
+                title, sep, content = raw.strip().partition(":")
+                normalized.append({"title": title.strip() if sep else "",
+                                   "content": content.strip() if sep else raw.strip()})
+        if not normalized:
+            return {"summary": "Не смог собрать стратегию: в блоках нет текста.",
                     "effect": {}, "undo": {}}
 
         before = copy.deepcopy(self.dm.get_strategy())
@@ -631,7 +646,7 @@ class AITools:
             "title": s.get("title") or f"Блок {index}",
             "icon": s.get("icon") or "•",
             "content": s.get("content") or "",
-        } for index, s in enumerate(sections, start=1)]
+        } for index, s in enumerate(normalized, start=1)]
         strategy = self.dm.get_strategy()
         strategy["sections"] = built
         self._bump_version(f"стратегия собрана ({len(built)} блоков)")
@@ -1975,6 +1990,9 @@ class AIAgent:
         catalog = self.tools_catalog()
         allowed = {name for name in self.registry.names() if name not in AGENT_DENY}
         nudged = False
+        finish_nudged = False
+        plan_grew = False
+        first_say = ""
         unknown: List[str] = []
         for step in range(AGENT_STEPS):
             done_text = "\n".join(f"{number}. {line}" for number, line in enumerate(history, 1))
@@ -2003,6 +2021,18 @@ class AIAgent:
                     nudged = True
                     history.append("ещё ничего не сделано — выбери инструмент или action=ask")
                     continue
+                if kind == "done" and say and not first_say:
+                    first_say = say
+                # после нового плана «готово» не принимается, пока нет подписей и ТЗ
+                gaps = self._plan_gaps() if (kind == "done" and plan_grew) else []
+                if gaps and not finish_nudged:
+                    finish_nudged = True
+                    history.append(f"задача не закончена: у плана нет {self._gap_words(gaps)} — "
+                                   f"выполни {', '.join(gaps)}, потом action=done")
+                    continue
+                if gaps:
+                    return AIReply(self._finish_after_plan(gaps, actions, first_say),
+                                   "agent", actions)
                 return AIReply(say or ("Готово." if kind == "done" else "Уточни задачу."),
                                "agent", actions)
             tool = str(action.get("tool") or "").strip()
@@ -2025,13 +2055,57 @@ class AIAgent:
             spec = self.registry.get(tool)
             raw_args = action.get("args") if isinstance(action.get("args"), dict) else {}
             args = {key: value for key, value in raw_args.items() if key in spec.args}
+            plan_before = len(self.core.dm.get_content_plan())
             reply = self.core._execute(tool, args, "agent")
             actions.extend(reply.actions or [])
+            if len(self.core.dm.get_content_plan()) > plan_before:
+                plan_grew = True
             history.append(f"{tool}({json.dumps(args, ensure_ascii=False)}) — "
                            f"{reply.text.splitlines()[0] if reply.text else 'готово'}")
+        gaps = self._plan_gaps() if plan_grew else []
+        if gaps:
+            return AIReply(self._finish_after_plan(
+                gaps, actions, first_say, note=f"Остановился на лимите шагов ({AGENT_STEPS})."),
+                "agent", actions)
         tail = "\n".join(history[-4:])
         return AIReply(f"Остановился на лимите шагов ({AGENT_STEPS}). Что успел:\n{tail}",
                        "agent", actions)
+
+    def _plan_gaps(self) -> List[str]:
+        """Чего не хватает у позиций плана: подписей и ТЗ на съёмку."""
+        plan = self.core.dm.get_content_plan()
+        gaps: List[str] = []
+        if plan and any(not str(item.get("caption") or "").strip() for item in plan):
+            gaps.append("write_captions")
+        if plan and any(not item.get("shooting_task_id") for item in plan):
+            gaps.append("create_shooting_task")
+        return gaps
+
+    @staticmethod
+    def _gap_words(gaps: List[str]) -> str:
+        words = []
+        if "write_captions" in gaps:
+            words.append("подписей")
+        if "create_shooting_task" in gaps:
+            words.append("ТЗ на съёмку")
+        return " и ".join(words)
+
+    def _finish_after_plan(self, gaps: List[str], actions: List[Dict[str, Any]],
+                           say: str, note: str = "") -> str:
+        """Довести цепочку после плана: подписи и ТЗ делает тот же журнальный инструмент."""
+        made = []
+        for tool in gaps:
+            reply = self.core._execute(tool, {}, "agent")
+            actions.extend(reply.actions or [])
+            made.append(tool)
+        plan = self.core.dm.get_content_plan()
+        captions = sum(1 for item in plan if str(item.get("caption") or "").strip())
+        tasks = sum(1 for item in plan if item.get("shooting_task_id"))
+        lead = " ".join(part for part in (note, say) if part).strip()
+        tail = f"В плане {len(plan)} позиций: с подписью {captions}, с ТЗ {tasks}."
+        if made:
+            tail += f" Довёл до конца сам: {', '.join(made)}."
+        return f"{lead} {tail}".strip()
 
     @staticmethod
     def _unknown_reply(unknown: List[str], actions: List[Dict[str, Any]]) -> str:

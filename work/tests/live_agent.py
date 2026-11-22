@@ -84,6 +84,7 @@ plan = dm.get_content_plan()
 sections = len(dm.get_strategy().get("sections") or [])
 plan_count = len(plan)
 captions = sum(1 for item in plan if str(item.get("caption") or "").strip())
+tasks = sum(1 for item in plan if item.get("shooting_task_id"))
 check("живая модель отработала задачу", reply1.text.strip() != "" and took1 > 0)
 check("сделано больше одного шага", len(tools1) >= 2, tools1)
 check("стратегия или план созданы", sections > strategy_before or bool(plan),
@@ -91,6 +92,7 @@ check("стратегия или план созданы", sections > strategy_b
 check("план непустой", bool(plan), len(plan))
 if plan:
     check("есть подписи у постов", captions > 0, f"{captions} из {len(plan)}")
+    check("есть ТЗ у постов", tasks > 0, f"{tasks} из {len(plan)}")
 
 # --- 2. проверка плана правилом, без модели ---
 print('\n2. «проверь план»')
@@ -108,7 +110,7 @@ print('\n4. «что сейчас в плане?»')
 reply4, took4, tools4 = run_task("что сейчас в плане?")
 check("ответ на вопрос не пустой", bool(reply4.text.strip()), reply4.text[:160])
 
-print(f"\nживых тестов: {4 + 4}, провалов: {len(fails)}")
+print(f"\nживых тестов: {4 + 5}, провалов: {len(fails)}")
 if fails:
     print("провалились: " + ", ".join(fails))
 raise SystemExit(1 if fails else 0)
