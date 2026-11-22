@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -174,7 +175,7 @@ def check_access(token: str, http: Any = requests) -> Dict[str, Any]:
     return result
 
 
-# --- Публикация (шаг D4): контейнер → media_publish. Все вызовы сети идут через `http`. ---
+# --- Публикация (шаг D4): контейнер → media_publish. Все вызовы сети идут через `_publish_call`. ---
 
 PUBLISH_TIMEOUT_SEC = 60
 PUBLISH_POLL_SEC = 5
@@ -194,16 +195,22 @@ def _graph_error(response: Any, token: str) -> str:
                   token)
 
 
-def publishing_limit(token: str, ig_user_id: str, http: Any = requests) -> Dict[str, int]:
-    """Read-only: сколько публикаций осталось в скользящие 24 часа."""
+def _publish_call(token: str, method: str, path: str, http: Any, timeout: int, **kwargs: Any) -> Dict[str, Any]:
+    """Один вызов Graph API: сеть и отказ Graph превращаются в PublishError без токена в тексте."""
     try:
-        response = http.get(f"{GRAPH_URL}/{ig_user_id}/content_publishing_limit",
-                            params={"fields": "config,quota_usage", "access_token": token}, timeout=20)
-    except Exception as exc:
+        response = getattr(http, method)(f"{GRAPH_URL}/{path}", timeout=timeout, **kwargs)
+    except Exception as exc:  # текст исключения может содержать URL с токеном
         raise PublishError("сеть недоступна: " + _scrub(str(exc), token))
     if getattr(response, "status_code", 0) != 200:
         raise PublishError(_graph_error(response, token))
-    data = (response.json() or {}).get("data") or [{}]
+    return response.json() or {}
+
+
+def publishing_limit(token: str, ig_user_id: str, http: Any = requests) -> Dict[str, int]:
+    """Read-only: сколько публикаций осталось в скользящие 24 часа."""
+    body = _publish_call(token, "get", f"{ig_user_id}/content_publishing_limit", http, 20,
+                         params={"fields": "config,quota_usage", "access_token": token})
+    data = body.get("data") or [{}]
     usage = int(data[0].get("quota_usage") or 0)
     total = int((data[0].get("config") or {}).get("quota_total") or 50)
     return {"used": usage, "total": total, "left": max(total - usage, 0)}
@@ -213,13 +220,8 @@ def create_container(token: str, ig_user_id: str, media: Dict[str, Any], http: A
     """POST /{ig-user-id}/media — контейнер публикации; возвращает его id."""
     payload = {"access_token": token, "media_type": media["media_type"],
                ("video_url" if media["is_video"] else "image_url"): media["url"]}
-    try:
-        response = http.post(f"{GRAPH_URL}/{ig_user_id}/media", data=payload, timeout=60)
-    except Exception as exc:
-        raise PublishError("сеть недоступна: " + _scrub(str(exc), token))
-    if getattr(response, "status_code", 0) != 200:
-        raise PublishError(_graph_error(response, token))
-    container = str((response.json() or {}).get("id") or "")
+    body = _publish_call(token, "post", f"{ig_user_id}/media", http, 60, data=payload)
+    container = str(body.get("id") or "")
     if not container:
         raise PublishError("Graph API не вернул id контейнера")
     return container
@@ -229,19 +231,12 @@ def wait_container(token: str, container_id: str, http: Any = requests,
                    timeout: int = PUBLISH_TIMEOUT_SEC, poll: int = PUBLISH_POLL_SEC,
                    sleep: Any = None) -> None:
     """Ждём FINISHED; для видео это может занять время. Ограничено по времени."""
-    import time
-
     sleep = sleep or time.sleep
     waited = 0
     while True:
-        try:
-            response = http.get(f"{GRAPH_URL}/{container_id}",
-                                params={"fields": "status_code", "access_token": token}, timeout=20)
-        except Exception as exc:
-            raise PublishError("сеть недоступна: " + _scrub(str(exc), token))
-        if getattr(response, "status_code", 0) != 200:
-            raise PublishError(_graph_error(response, token))
-        status = str((response.json() or {}).get("status_code") or "")
+        body = _publish_call(token, "get", container_id, http, 20,
+                             params={"fields": "status_code", "access_token": token})
+        status = str(body.get("status_code") or "")
         if status == "FINISHED":
             return
         if status in ("ERROR", "EXPIRED"):
@@ -254,14 +249,9 @@ def wait_container(token: str, container_id: str, http: Any = requests,
 
 def media_publish(token: str, ig_user_id: str, container_id: str, http: Any = requests) -> str:
     """POST /{ig-user-id}/media_publish — возвращает id опубликованного медиа."""
-    try:
-        response = http.post(f"{GRAPH_URL}/{ig_user_id}/media_publish",
-                             data={"creation_id": container_id, "access_token": token}, timeout=60)
-    except Exception as exc:
-        raise PublishError("сеть недоступна: " + _scrub(str(exc), token))
-    if getattr(response, "status_code", 0) != 200:
-        raise PublishError(_graph_error(response, token))
-    published = str((response.json() or {}).get("id") or "")
+    body = _publish_call(token, "post", f"{ig_user_id}/media_publish", http, 60,
+                         data={"creation_id": container_id, "access_token": token})
+    published = str(body.get("id") or "")
     if not published:
         raise PublishError("Graph API не вернул id публикации")
     return published
