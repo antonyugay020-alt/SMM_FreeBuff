@@ -1964,7 +1964,7 @@ class AICore:
         self.registry.register(ToolSpec("sync_plan_events", "события календаря из позиций плана",
                                         {}, self.tools.sync_plan_events))
         self.registry.register(ToolSpec("validate_plan", "проверка плана: даты, подписи, ТЗ",
-                                        {}, self.tools.validate_plan))
+                                        {}, self.tools.validate_plan, read_only=True))
         self.registry.register(ToolSpec("analyze_performance",
                                         "сводка по метрикам: охват, вовлечённость, топ постов",
                                         {"period_days": int},
