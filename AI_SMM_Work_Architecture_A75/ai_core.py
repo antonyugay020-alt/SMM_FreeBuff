@@ -288,6 +288,8 @@ class ToolRegistry:
 # === Plan readiness: one rule set for the GUI check and the legacy pipeline ===
 
 NO_DATE, NO_CAPTION, NO_TASK = "без даты", "без подписи", "без ТЗ"
+PLAN_FORMATS = {"пост": "Пост", "reels": "Reels", "рилс": "Reels", "карусель": "Карусель"}
+
 MAX_ISSUES = 15
 NOOP_UNDO = {"op": "noop"}
 
@@ -738,10 +740,24 @@ class AITools:
             return today
         return max(max(dates) + timedelta(days=1), today)
 
+    def _plan_topics(self, topics: Optional[List[Any]], count: int, brief: str) -> List[Dict[str, Any]]:
+        """Темы из аргумента, иначе — от модели; пустой список, если модель недоступна."""
+        prepared: List[Dict[str, Any]] = []
+        for raw in topics or []:
+            if isinstance(raw, str) and raw.strip():
+                prepared.append({"topic": raw.strip()})
+            elif isinstance(raw, dict) and str(raw.get("topic") or "").strip():
+                prepared.append(raw)
+        if not prepared and getattr(self, "router", None) is not None:
+            prepared = self.router.generate_plan_topics(count, brief)
+        return prepared[:count]
+
     def create_content_plan(self, count: int = 5, rubrics: Optional[List[str]] = None,
-                            start: Optional[str] = None, period_days: int = 7) -> Dict[str, Any]:
+                            start: Optional[str] = None, period_days: int = 7,
+                            topics: Optional[List[Any]] = None) -> Dict[str, Any]:
         count = max(1, min(int(count or 5), 60))
         rubrics = [r for r in (rubrics or []) if str(r).strip()] or ["Полезное"]
+        suggested = self._plan_topics(topics, count, ", ".join(rubrics if rubrics != ["Полезное"] else []))
         try:
             start_date = datetime.strptime(start, "%d.%m.%Y") if start else self._next_plan_date()
         except ValueError:
@@ -752,12 +768,15 @@ class AITools:
             created = []
             for index in range(count):
                 item_id = f"cp_{datetime.now().strftime('%Y%m%d')}_{uuid.uuid4().hex[:5]}"
+                idea = suggested[index] if index < len(suggested) else {}
+                rubric = str(idea.get("rubric") or "").strip() or rubrics[index % len(rubrics)]
                 current.append({
                     "id": item_id,
                     "date": (start_date + timedelta(days=index * step)).strftime("%d.%m.%Y"),
-                    "rubric": rubrics[index % len(rubrics)],
-                    "topic": f"{rubrics[index % len(rubrics)]}: идея {index + 1}",
-                    "format": "Пост",
+                    "rubric": rubric,
+                    "topic": str(idea.get("topic") or "").strip()
+                             or f"{rubrics[index % len(rubrics)]}: идея {index + 1}",
+                    "format": PLAN_FORMATS.get(str(idea.get("format") or "").strip().lower(), "Пост"),
                     "status": "Черновик",
                     "responsible": "SMM",
                     "strategy_link": "",
@@ -1618,6 +1637,10 @@ class AIRouter:
             return RouteDecision("get_project_context", {"scope": "all"}, "rules")
         if re.search(r"(сделай|собери|создай|разработай).{0,20}стратеги", low):
             return RouteDecision("create_strategy", {"brief": text}, "rules")
+        if re.search(r"(придумай|предложи|подбери).{0,25}(тем|идеи)", low):
+            return RouteDecision("create_content_plan",
+                                 {"count": _first_int(low) or 10,
+                                  "period_days": _period_days(low)}, "rules")
         if re.search(r"(создай|сделай|составь).{0,25}(контент.?план|план на)", low):
             count = _first_int(low) or 5
             return RouteDecision("create_content_plan",
@@ -1799,9 +1822,41 @@ class AIRouter:
                     return built
         return []
 
+    def generate_plan_topics(self, count: int = 10, brief: str = "") -> List[Dict[str, Any]]:
+        """Темы для контент-плана от модели: тема, рубрика, формат. Без модели — пусто."""
+        profile = (self.profile_getter() if hasattr(self, "profile_getter") else {}) or {}
+        strategy = (self.strategy_getter() if hasattr(self, "strategy_getter") else {}) or {}
+        sections = [f"{s.get('title')}: {s.get('content')}" for s in strategy.get("sections") or []]
+        system = ("Ты SMM-стратег. Верни JSON: {\"topics\": [{\"topic\": \"...\", \"rubric\": \"...\", "
+                  "\"format\": \"Пост\"}]}. Темы конкретные и разные, без нумерации и без слова «идея». "
+                  "format — только «Пост», «Reels» или «Карусель». Пиши по-русски.")
+        user = (f"Бренд-профиль: {json.dumps(profile, ensure_ascii=False)}\n"
+                f"Стратегия: {' | '.join(sections) or 'нет'}\n"
+                f"Задача: {brief or 'контент на ближайшие дни'}\nТем: {count}")
+        raw = self._generate(system, user, "plan_topics")
+        for data in _json_candidates(raw):
+            topics = data.get("topics") if isinstance(data, dict) else None
+            if not isinstance(topics, list):
+                continue
+            built = []
+            for item in topics:
+                if isinstance(item, str) and item.strip():
+                    built.append({"topic": item.strip()})
+                elif isinstance(item, dict) and str(item.get("topic") or "").strip():
+                    built.append(item)
+            if built:
+                return built[:count]
+        return []
+
     def write_caption(self, brief: str) -> str:
+        profile = (self.profile_getter() if hasattr(self, "profile_getter") else {}) or {}
+        tone = str(profile.get("tone_of_voice") or "").strip()
         system = ("Ты SMM-копирайтер. Дай подпись до 400 символов, 3–5 хэштегов и CTA. "
-                  "Без markdown.")
+                  "Без markdown. Обращайся к читателю на «вы», одно обращение на весь текст.")
+        if tone:
+            system += f" Тон голоса бренда: {tone}."
+        if profile.get("client_name"):
+            system += f" Бренд: {profile['client_name']}, ниша: {profile.get('niche') or '—'}."
         text = self._generate(system, brief, "caption")
         return text or f"{brief}\n\nПодпишитесь, чтобы не пропустить новые посты.\n#smm #контент"
 
@@ -1975,6 +2030,7 @@ class AICore:
                                system_context=self._context_text)
         self.router.plan_getter = dm.get_content_plan
         self.router.profile_getter = dm.get_brand_profile
+        self.router.strategy_getter = dm.get_strategy
         self.tools.router = self.router
 
         self.interview: Dict[str, Any] = {}
@@ -1996,7 +2052,8 @@ class AICore:
                                         self.tools.update_strategy_section))
         self.registry.register(ToolSpec("create_content_plan", "создать позиции контент-плана",
                                         {"count": int, "rubrics": list, "start": str,
-                                         "period_days": int}, self.tools.create_content_plan))
+                                         "period_days": int, "topics": list},
+                                        self.tools.create_content_plan))
         self.registry.register(ToolSpec("schedule_posts", "расставить даты и события",
                                         {"plan_ids": list, "dates": list},
                                         self.tools.schedule_posts,
