@@ -7,6 +7,8 @@
 
 Скрипт ничего не публикует и не трогает ваш проект: создаёт временный каталог.
 Печатает реальные тексты ответов модели и время до 10 готовых постов.
+Перед замерами модель прогревается коротким запросом, чтобы в тайминги не попадала
+загрузка весов в память (первый ответ после простоя бывает в 8–10 раз медленнее).
 Без доступной Ollama честно завершается с кодом 2 и подсказкой.
 """
 from __future__ import annotations
@@ -68,6 +70,16 @@ def main() -> int:
                            "audience": "жители района 25–40", "positioning": "своя обжарка",
                            "tone_of_voice": "тёплый", "languages": "ru"})
     core = AICore(dm, {"monthly_budget_usd": 0}, providers=(local, None))
+
+    print(f"прогрев модели {args.model} (в замеры не входит)…", end=" ", flush=True)
+    warm_started = time.time()
+    warm = local.chat("Отвечай одним словом.", "Скажи: готово", max_tokens=8)
+    warm_seconds = time.time() - warm_started
+    if warm.error:
+        print(f"не вышло за {warm_seconds:.1f} с: {warm.error}")
+    else:
+        print(f"{warm_seconds:.1f} с")
+
     started = time.time()
     marks: list[tuple[str, float]] = []
 

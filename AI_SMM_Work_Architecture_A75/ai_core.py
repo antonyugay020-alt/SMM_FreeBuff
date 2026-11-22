@@ -316,9 +316,6 @@ def _short_topic(text: str, limit: int = TOPIC_LIMIT) -> str:
         if text.lower().startswith(verb + " "):
             text = text[len(verb):].strip()
             break
-    head = text.split(",", 1)[0].strip()
-    if len(head) >= 12:
-        text = head
     text = text.rstrip(" .!…,;:")
     if len(text) > limit:
         cut = text[:limit]
