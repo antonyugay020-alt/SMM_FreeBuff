@@ -651,3 +651,42 @@ GUI:
 - Затем Instagram.
 
 Следующая модель: DeepSeek V4.1 Flash.
+
+### Сессия 23 — 22.11.2026 — модель: бесплатный тариф Freebuff — этап C1 (видео)
+
+Сделано:
+- `video_processor.py` наконец подключён: до этого класс на 277 строк никто не импортировал.
+  В `get_video_info` `eval(r_frame_rate)` заменён разбором `num/den` (`_parse_fps`): строка приходит
+  из внешнего ffprobe, `eval` там не место.
+- Ядро: `process_video(media_ids, platform)` — площадки `VIDEO_TARGETS` (Reels 9:16, пост 1:1, TikTok,
+  Shorts, YouTube) через `export_for_platform`; исходник `_video_source(record)` (source_path → path →
+  файл по имени, только видео-расширения); готовый файл `<имя>_<площадка>.mp4` в `media/images`,
+  перезапись при повторе. Запись получает `name`, `path`, `source_path`, `size` из `get_video_info`,
+  `processed=[площадка]`; откат `restore_sections` (записи + удаление созданного файла). Нет ffmpeg —
+  сообщение без записи в журнал. Требуется подтверждение при >5 файлах.
+- `AITools.video` — ленивый `VideoProcessor`, тесты подставляют свой (в VM нет ffmpeg).
+- «Публикации»: кнопка «🎬 Видео под площадку» в шапке медиатеки — выбор площадки через `QInputDialog`,
+  `run_full("process_video")`, отчёт, пересборка и выбор обновлённой записи.
+- `DECISIONS.md` 5.12 (что делает инструмент, имена файлов, откат, оговорка про pad вместо crop и
+  отсутствие маршрутизации из чата) + две строки в журнале решений; `PLAN.md` — факт C1.
+
+Проверено (headless, offscreen):
+- `/tmp/c1_test.py` (`C1_OK`): ffmpeg/ffprobe-заглушки в PATH; `VideoProcessor` видит ffmpeg;
+  `process_video` создаёт `c1_clip_reels.mp4`, запись получает имя/путь/`source_path`/`size 1080x1920`/
+  `processed`; журнал `process_video`; fps 29.97 разобран без eval; повтор не даёт `_reels_reels`;
+  откат удаляет готовый файл, второй откат возвращает исходную запись, исходник цел; чужая площадка
+  отклонена; без ffmpeg — «Нужен ffmpeg» и журнал не растёт; кнопка раздела обрабатывает текущее видео
+  и переключает просмотр на обновлённую запись.
+- Регресс EXIT=0: `step13`, `step12`, `step11`, `step10`, `step9`, `step6`, `validate_test`,
+  `legacy_val_test`, `smoke_chain`; `compileall` чистый; тестовые файлы из `media/images` удалены.
+
+Трогались файлы:
+- `video_processor.py`, `ai_core.py`, `gui_sections/publications_section.py`,
+  `work/DECISIONS.md`, `work/PLAN.md`, `work/SESSION_LOG.md`.
+
+Осталось / следующий шаг:
+- C2: субтитры — `transcribe` → `generate_srt` → `burn_subtitles`, инструмент `make_subtitles`;
+  риски: Whisper на 8 ГБ VRAM рядом с LLM (выгружать модель) и время на длинных роликах.
+- Живая проверка: настоящий ffmpeg на машине пользователя, кнопка в живом GUI.
+
+Следующая модель: DeepSeek V4.1 Flash.

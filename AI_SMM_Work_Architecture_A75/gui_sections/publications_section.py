@@ -690,6 +690,7 @@ class PublicationsSection(DataSection):
 
         zone.add_header_widget(_header_button("🎛 Обработать фото",
                                               lambda: self._process_media()))
+        zone.add_header_widget(_header_button("🎬 Видео под площадку", self._process_video))
         zone.add_header_widget(_header_button("📦 Экспорт пакета", self._export_package))
         return zone
 
@@ -783,6 +784,29 @@ class PublicationsSection(DataSection):
         self._refresh_all()
         updated = next((m for m in self.dm.get_media_ready()
                         if m.get("id") == media_id), None)
+        if updated:
+            self._select(updated)
+
+    def _process_video(self):
+        """Выбрать площадку и подготовить текущее видео через process_video."""
+        from ai_core import VIDEO_TARGETS
+
+        item = self.current
+        if not item or item.get("type") != "video":
+            QMessageBox.information(self, "Видео", "Выберите видео в медиатеке.")
+            return
+        labels = {label: key for key, (label, _suffix) in VIDEO_TARGETS.items()}
+        choice, ok = QInputDialog.getItem(
+            self, "Видео под площадку",
+            f"Материал: {item.get('name', '')}\nКуда готовим:", list(labels), 0, False)
+        if not ok:
+            return
+        media_id = item.get("id")
+        text = self.run_full("process_video", media_ids=[media_id], platform=labels[choice])
+        summary = text.splitlines()[0] if text else ""
+        QMessageBox.information(self, "Видео под площадку", summary or "Готово")
+        self._refresh_all()
+        updated = next((m for m in self.dm.get_media_ready() if m.get("id") == media_id), None)
         if updated:
             self._select(updated)
 

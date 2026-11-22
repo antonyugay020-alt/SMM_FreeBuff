@@ -264,13 +264,22 @@ class VideoProcessor:
                         "width": int(video_stream.get("width", 0)),
                         "height": int(video_stream.get("height", 0)),
                         "duration": float(info.get("format", {}).get("duration", 0)),
-                        "fps": eval(video_stream.get("r_frame_rate", "30/1")),
+                        "fps": self._parse_fps(video_stream.get("r_frame_rate")),
                         "codec": video_stream.get("codec_name", "unknown")
                     }
             return None
         except Exception as e:
             logger.error(f"Failed to get video info: {e}")
             return None
+
+    @staticmethod
+    def _parse_fps(rate: Any) -> float:
+        """`30000/1001` -> 29.97. Разбором, а не eval: строку даёт внешний ffprobe."""
+        try:
+            num, _, den = str(rate or "30/1").partition("/")
+            return round(float(num) / float(den or 1), 2)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return 0.0
 
     def generate_unique_filename(self, prefix: str, extension: str) -> str:
         timestamp = time.strftime("%Y%m%d_%H%M%S")

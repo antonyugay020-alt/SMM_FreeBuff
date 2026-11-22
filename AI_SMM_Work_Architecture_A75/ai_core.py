@@ -309,6 +309,17 @@ MATERIAL_KINDS = {
 }
 
 
+# Видео (process_video): площадка -> (подпись для отчёта, суффикс готового файла)
+VIDEO_TARGETS = {
+    "instagram_reels": ("Reels 9:16, до 90 сек", "reels"),
+    "instagram_post": ("Пост 1:1, до 60 сек", "post"),
+    "tiktok": ("TikTok 9:16, до 180 сек", "tiktok"),
+    "youtube_shorts": ("Shorts 9:16, до 60 сек", "shorts"),
+    "youtube_video": ("YouTube 16:9", "youtube"),
+}
+VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
+
+
 def material_kind(path: Path) -> str:
     return MATERIAL_KINDS.get(Path(path).suffix.lower(), "file")
 
@@ -354,6 +365,7 @@ class AITools:
     def __init__(self, dm, router_ref):
         self.dm = dm
         self.router = router_ref
+        self.video = None  # VideoProcessor создаётся при первом обращении (тесты подставляют свой)
 
     # --- helpers ---
     def _bump_version(self, note: str, author: str = "AI") -> None:
@@ -904,6 +916,80 @@ class AITools:
         top = (height - new_height) // 2
         return image.crop((0, top, width, top + new_height))
 
+    # --- video ---
+    def _video_processor(self):
+        if self.video is None:
+            from video_processor import VideoProcessor
+            self.video = VideoProcessor()
+        return self.video
+
+    def process_video(self, media_ids: Optional[List[str]] = None,
+                      platform: str = "instagram_reels") -> Dict[str, Any]:
+        """Подготовить видео под площадку: размер, кадры, сжатие — всегда от исходника."""
+        target = str(platform or "").strip().lower()
+        if target not in VIDEO_TARGETS:
+            return {"summary": f"Неизвестная площадка: {platform or '—'}",
+                    "effect": {}, "undo": {}}
+        zones = ("media_ready", "media_sources", "media_references")
+        index = {str(record.get("id")): (zone, record) for zone in zones
+                 for record in self.dm._data.get(zone, []) if record.get("id")}
+        ids = [str(media_id) for media_id in (media_ids or []) if str(media_id) in index]
+        if not ids:
+            return {"summary": "Нечего обрабатывать: материалы не найдены",
+                    "effect": {}, "undo": {}}
+        processor = self._video_processor()
+        if not processor.ffmpeg_available:
+            return {"summary": "Нужен ffmpeg: без него видео не обработать",
+                    "effect": {}, "undo": {}}
+
+        label, suffix = VIDEO_TARGETS[target]
+        before: Dict[str, Any] = {}
+        done: List[str] = []
+        files: List[str] = []
+        skipped: List[str] = []
+        for media_id in ids:
+            zone, record = index[media_id]
+            source = self._video_source(record)
+            if source is None:
+                skipped.append(f"{record.get('name')}: файл не найден или это не видео")
+                continue
+            dest = MEDIA_IMAGES / f"{source.stem}_{suffix}.mp4"
+            if not processor.export_for_platform(str(source), target, str(dest)):
+                skipped.append(f"{record.get('name')}: ffmpeg не смог обработать")
+                continue
+            info = processor.get_video_info(str(dest)) or {}
+            before.setdefault(zone, copy.deepcopy(self.dm._data.get(zone, [])))
+            record["path"] = str(dest)
+            record["name"] = dest.name
+            if info.get("width") and info.get("height"):
+                record["size"] = f"{info['width']}x{info['height']}"
+            record["source_path"] = str(source)
+            record["processed"] = [target]
+            done.append(media_id)
+            files.append(str(dest))
+
+        if not done:
+            return {"summary": "Не обработал ни одного видео: " + "; ".join(skipped[:3]),
+                    "effect": {}, "undo": {}}
+        self.dm.save()
+        summary = f"Обработал видео: {len(done)} ({label})"
+        if skipped:
+            summary += f". Пропущено: {len(skipped)}"
+        return {"summary": summary,
+                "effect": {"ids": done, "files": [Path(name).name for name in files],
+                           "platform": target, "skipped": skipped},
+                "undo": {"op": "restore_sections", "sections": before, "files": files}}
+
+    @staticmethod
+    def _video_source(record: Dict[str, Any]) -> Optional[Path]:
+        """Исходный видеофайл записи: `source_path` → `path` → файл по имени в media/images."""
+        for raw in (record.get("source_path"), record.get("path"),
+                    MEDIA_IMAGES / str(record.get("name") or "")):
+            path = Path(raw) if raw else None
+            if path is not None and path.is_file() and path.suffix.lower() in VIDEO_SUFFIXES:
+                return path
+        return None
+
     def export_package(self, date_from: str = "", date_to: str = "",
                        dest: str = "") -> Dict[str, Any]:
         """Собрать пакет публикаций: в `dest`, если папка выбрана, иначе в проект."""
@@ -1384,6 +1470,11 @@ class AICore:
                                         {"media_ids": list, "operations": list},
                                         self.tools.batch_photo,
                                         needs_confirmation=lambda a: len(a.get("media_ids") or []) > 10))
+        self.registry.register(ToolSpec("process_video",
+                                        "видео под площадку: 9:16 или 1:1, сжатие",
+                                        {"media_ids": list, "platform": str},
+                                        self.tools.process_video,
+                                        needs_confirmation=lambda a: len(a.get("media_ids") or []) > 5))
         self.registry.register(ToolSpec("export_pdf", "план или стратегия в PDF",
                                         {"kind": str, "dest": str}, self.tools.export_pdf))
         self.registry.register(ToolSpec("import_materials", "импорт файлов в «Материалы»",
