@@ -690,3 +690,40 @@ GUI:
 - Живая проверка: настоящий ffmpeg на машине пользователя, кнопка в живом GUI.
 
 Следующая модель: DeepSeek V4.1 Flash.
+
+### Сессия 24 — 22.11.2026 — модель: бесплатный тариф Freebuff — повтор видео + этап C2 (субтитры)
+
+Сделано:
+- Повтор видео: имя готового файла считается от `_video_stem` (снимает уже добавленный суффикс площадки).
+  Запись без `source_path`, указывающая на `clip_reels.mp4`, больше не даёт `clip_reels_reels.mp4`.
+  Тест `c1_test.py` дополнен этим случаем.
+- В `media` добавлена колонка `source_path` (схема + `_ensure_columns` + save/load): до этого `source_path`,
+  который писали `batch_photo`/`process_video`, жил только в памяти и терялся после перезапуска.
+- `VideoProcessor.extract_audio(video_path)`: wav 16 кГц моно через временные ASCII-пути (`_prepare_ffmpeg_paths`),
+  возвращает путь временного файла или None.
+- Ядро: `make_subtitles(media_ids, language="ru", burn=True)` — извлечение звука → `transcribe` →
+  `.srt` в `<проект>/subtitles/<имя>.srt` (BOM) → `burn_subtitles` в `<имя>_subs.mp4`. Откат `restore_sections`
+  удаляет оба файла и возвращает запись; `burn=False` — только `.srt`. Whisper не в `requirements`: нет модели —
+  «речь не распознана» без записи в журнал.
+- «Публикации»: кнопка «💬 Субтитры» с выбором «Видео с субтитрами» / «Только .srt».
+- `DECISIONS.md` 5.13 + три строки в журнале решений; `PLAN.md` — факты по повтору и C2.
+
+Проверено (headless, offscreen):
+- `/tmp/c2_test.py` (`C2_OK`) с подставленным распознавателем: создаются `.srt` (с BOM) и `_subs.mp4`;
+  запись переключается на готовое видео, `source_path` указывает на исходник и переживает перезапуск;
+  журнал `make_subtitles`; откат удаляет `.srt` и видео и возвращает запись; `burn=False` даёт только `.srt`
+  и не меняет запись; без распознавания и без ffmpeg — отчёт и никакой записи в журнал; кнопка раздела
+  прогоняет субтитры и переключает просмотр.
+- `/tmp/c1_test.py` (`C1_OK`) с новым пунктом про повтор без `source_path`.
+- Регресс EXIT=0: `step13`, `step12`, `step11`, `step10`, `step9`, `step6`, `validate_test`,
+  `legacy_val_test`, `smoke_chain`; `compileall` чистый; тестовые файлы из `media/images` удалены.
+
+Трогались файлы:
+- `video_processor.py`, `ai_core.py`, `storage.py`, `gui_sections/publications_section.py`,
+  `work/DECISIONS.md`, `work/PLAN.md`, `work/SESSION_LOG.md`.
+
+Осталось / следующий шаг:
+- C3: вид для видео в GUI (статусы, «до/после», выбор файлов из чата), затем Instagram.
+- Живая проверка: настоящий Whisper и выгрузка VRAM между LLM и распознаванием.
+
+Следующая модель: DeepSeek V4.1 Flash.

@@ -953,7 +953,7 @@ class AITools:
             if source is None:
                 skipped.append(f"{record.get('name')}: файл не найден или это не видео")
                 continue
-            dest = MEDIA_IMAGES / f"{source.stem}_{suffix}.mp4"
+            dest = MEDIA_IMAGES / f"{self._video_stem(source)}_{suffix}.mp4"
             if not processor.export_for_platform(str(source), target, str(dest)):
                 skipped.append(f"{record.get('name')}: ffmpeg не смог обработать")
                 continue
@@ -989,6 +989,87 @@ class AITools:
             if path is not None and path.is_file() and path.suffix.lower() in VIDEO_SUFFIXES:
                 return path
         return None
+
+    @staticmethod
+    def _video_stem(source: Path) -> str:
+        """Имя без уже добавленного суффикса площадки: повтор не даёт `_reels_reels`."""
+        for _label, token in VIDEO_TARGETS.values():
+            if source.stem.endswith(f"_{token}"):
+                return source.stem[: -len(token) - 1]
+        return source.stem
+
+    def make_subtitles(self, media_ids: Optional[List[str]] = None,
+                       language: str = "ru", burn: bool = True) -> Dict[str, Any]:
+        """Распознать речь: `.srt` в проект и, если нужно, видео с выжженными субтитрами."""
+        zones = ("media_ready", "media_sources", "media_references")
+        index = {str(record.get("id")): (zone, record) for zone in zones
+                 for record in self.dm._data.get(zone, []) if record.get("id")}
+        ids = [str(media_id) for media_id in (media_ids or []) if str(media_id) in index]
+        if not ids:
+            return {"summary": "Нечего распознавать: материалы не найдены",
+                    "effect": {}, "undo": {}}
+        processor = self._video_processor()
+        if not processor.ffmpeg_available:
+            return {"summary": "Нужен ffmpeg: без него субтитры не собрать",
+                    "effect": {}, "undo": {}}
+
+        subtitles = Path(self.dm.data_dir) / "subtitles"
+        before: Dict[str, Any] = {}
+        done: List[str] = []
+        files: List[str] = []
+        skipped: List[str] = []
+        srt_count = 0
+        for media_id in ids:
+            zone, record = index[media_id]
+            source = self._video_source(record)
+            if source is None:
+                skipped.append(f"{record.get('name')}: файл не найден или это не видео")
+                continue
+            audio = processor.extract_audio(str(source))
+            if not audio:
+                skipped.append(f"{record.get('name')}: не смог достать звуковую дорожку")
+                continue
+            recognised = processor.transcribe(audio, language=language or "ru")
+            Path(audio).unlink(missing_ok=True)
+            if not recognised or not recognised.get("segments"):
+                skipped.append(f"{record.get('name')}: речь не распознана (нужен Whisper)")
+                continue
+            stem = self._video_stem(source)
+            subtitles.mkdir(parents=True, exist_ok=True)
+            srt = subtitles / f"{stem}.srt"
+            if not processor.generate_srt(recognised["segments"], str(srt)):
+                skipped.append(f"{record.get('name')}: не удалось записать .srt")
+                continue
+            srt_count += 1
+            files.append(str(srt))
+            if not burn:
+                continue
+            dest = MEDIA_IMAGES / f"{stem}_subs.mp4"
+            if not processor.burn_subtitles(str(source), str(srt), str(dest)):
+                skipped.append(f"{record.get('name')}: субтитры не выжглись, .srt сохранён")
+                continue
+            before.setdefault(zone, copy.deepcopy(self.dm._data.get(zone, [])))
+            record["path"] = str(dest)
+            record["name"] = dest.name
+            record["source_path"] = str(source)
+            record["processed"] = ["subtitles"]
+            done.append(media_id)
+            files.append(str(dest))
+
+        if not files:
+            return {"summary": "Субтитры не сделаны: " + "; ".join(skipped[:3]),
+                    "effect": {}, "undo": {}}
+        if before:
+            self.dm.save()
+        summary = f"Субтитры: .srt {srt_count}"
+        if burn:
+            summary += f", выжжено в видео: {len(done)}"
+        if skipped:
+            summary += f". Пропущено: {len(skipped)}"
+        return {"summary": summary,
+                "effect": {"ids": done, "srt": srt_count,
+                           "files": [Path(name).name for name in files]},
+                "undo": {"op": "restore_sections", "sections": before, "files": files}}
 
     def export_package(self, date_from: str = "", date_to: str = "",
                        dest: str = "") -> Dict[str, Any]:
@@ -1475,6 +1556,11 @@ class AICore:
                                         {"media_ids": list, "platform": str},
                                         self.tools.process_video,
                                         needs_confirmation=lambda a: len(a.get("media_ids") or []) > 5))
+        self.registry.register(ToolSpec("make_subtitles",
+                                        "распознать речь: .srt и видео с субтитрами",
+                                        {"media_ids": list, "language": str, "burn": bool},
+                                        self.tools.make_subtitles,
+                                        needs_confirmation=lambda a: len(a.get("media_ids") or []) > 3))
         self.registry.register(ToolSpec("export_pdf", "план или стратегия в PDF",
                                         {"kind": str, "dest": str}, self.tools.export_pdf))
         self.registry.register(ToolSpec("import_materials", "импорт файлов в «Материалы»",

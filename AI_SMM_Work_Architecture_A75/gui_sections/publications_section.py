@@ -691,6 +691,7 @@ class PublicationsSection(DataSection):
         zone.add_header_widget(_header_button("🎛 Обработать фото",
                                               lambda: self._process_media()))
         zone.add_header_widget(_header_button("🎬 Видео под площадку", self._process_video))
+        zone.add_header_widget(_header_button("💬 Субтитры", self._process_subtitles))
         zone.add_header_widget(_header_button("📦 Экспорт пакета", self._export_package))
         return zone
 
@@ -805,6 +806,28 @@ class PublicationsSection(DataSection):
         text = self.run_full("process_video", media_ids=[media_id], platform=labels[choice])
         summary = text.splitlines()[0] if text else ""
         QMessageBox.information(self, "Видео под площадку", summary or "Готово")
+        self._refresh_all()
+        updated = next((m for m in self.dm.get_media_ready() if m.get("id") == media_id), None)
+        if updated:
+            self._select(updated)
+
+    def _process_subtitles(self):
+        """Распознать речь в текущем видео: только .srt или видео с выжженными субтитрами."""
+        item = self.current
+        if not item or item.get("type") != "video":
+            QMessageBox.information(self, "Субтитры", "Выберите видео в медиатеке.")
+            return
+        modes = {"Видео с субтитрами": True, "Только .srt": False}
+        choice, ok = QInputDialog.getItem(
+            self, "Субтитры", f"Материал: {item.get('name', '')}\nЧто сделать:",
+            list(modes), 0, False)
+        if not ok:
+            return
+        media_id = item.get("id")
+        text = self.run_full("make_subtitles", media_ids=[media_id], language="ru",
+                             burn=modes[choice])
+        summary = text.splitlines()[0] if text else ""
+        QMessageBox.information(self, "Субтитры", summary or "Готово")
         self._refresh_all()
         updated = next((m for m in self.dm.get_media_ready() if m.get("id") == media_id), None)
         if updated:

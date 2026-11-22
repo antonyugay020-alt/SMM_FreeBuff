@@ -175,6 +175,18 @@ class VideoProcessor:
             logger.error(f"FFmpeg execution failed: {e}")
             return False
 
+    def extract_audio(self, video_path: str) -> Optional[str]:
+        """Дорожка 16 кГц моно в wav — такой вход ждёт Whisper. Возвращает путь временного файла."""
+        if not self.ffmpeg_available:
+            return None
+        paths = self._prepare_ffmpeg_paths(video_path)
+        audio_path = self.ffmpeg_temp_dir / f"audio_{int(time.time() * 1000)}.wav"
+        success = self._run_ffmpeg(
+            ["ffmpeg", "-i", paths["video"], "-vn", "-ac", "1", "-ar", "16000",
+             "-y", str(audio_path).replace("\\", "/")], timeout=300)
+        paths["temp_video"].unlink(missing_ok=True)
+        return str(audio_path) if success and audio_path.is_file() else None
+
     def burn_subtitles(self, video_path: str, srt_path: str, output_path: str,
                       font_size: int = 24, font_color: str = "white") -> bool:
         if not self.ffmpeg_available:
