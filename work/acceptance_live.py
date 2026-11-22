@@ -24,10 +24,23 @@ from ai_core import AICore, OllamaProvider  # noqa: E402
 from data_manager import DataManager  # noqa: E402
 
 
+def _installed(host: str) -> list:
+    """Имена моделей из /api/tags; при любой ошибке — пустой список."""
+    try:
+        import json
+        import urllib.request
+
+        with urllib.request.urlopen(f"{host}/api/tags", timeout=3) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        return [str(item.get("name") or "") for item in data.get("models") or []]
+    except Exception:
+        return []
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Приёмка цепочки на локальной модели")
-    parser.add_argument("--model", default="qwen2.5:7b-instruct",
-                       help="имя модели в Ollama (по умолчанию qwen2.5:7b-instruct)")
+    parser.add_argument("--model", default="qwen3:8b",
+                       help="имя модели в Ollama (по умолчанию qwen3:8b)")
     parser.add_argument("--host", default="http://localhost:11434", help="адрес Ollama API")
     parser.add_argument("--keep", action="store_true", help="оставить временный проект на диске")
     args = parser.parse_args()
@@ -36,7 +49,12 @@ def main() -> int:
     if not local.available():
         print(f"Ollama недоступна: {args.host}, модель {args.model}.")
         print("Запустите `ollama serve` и `ollama pull <модель>`, затем повторите.")
-        print("Проверка: curl -s http://localhost:11434/api/tags")
+        print("Установленные модели:", ", ".join(_installed(args.host)) or "список не получен")
+        return 2
+    installed = _installed(args.host)
+    if installed and not any(name.split(":")[0] == args.model.split(":")[0] for name in installed):
+        print(f"Модели {args.model} нет в Ollama. Установленные: {', '.join(installed)}")
+        print("Выберите модель аргументом --model.")
         return 2
 
     tmp = Path(tempfile.mkdtemp(prefix="accept_live_"))
