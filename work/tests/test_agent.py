@@ -1,5 +1,6 @@
 """AI-менеджер выполняет задачу шагами сам: модель выбирает инструменты и доводит до результата."""
 import json, sys, tempfile
+from datetime import datetime, timedelta
 from pathlib import Path
 
 APP = Path(__file__).resolve().parents[2] / "AI_SMM_Work_Architecture_A75"
@@ -528,6 +529,91 @@ reply = core.handle("экспортируй план в excel")
 ok("Excel не уходит в пакет и не просит подтверждения",
    not reply.needs_confirmation and "PDF" in reply.text, reply.text)
 ok("фразы третьего обмера не дёргают модель", not stub.calls, stub.calls)
+
+# --- четвёртый обмер: ближайшие посты, «завтра», смена даты, «в план пост про …» ---
+dm, core, stub = seeded_plan()
+decision = core.router._rules("покажи ближайшие посты")
+ok("«покажи ближайшие посты» — чтение плана без действий",
+   decision is not None and decision.tool == "get_project_context"
+   and decision.args.get("scope") == "upcoming", getattr(decision, "tool", None))
+reply = core.handle("покажи ближайшие посты")
+ok("ближайшие посты: дата, тема и статус",
+   "01.04.2027" in reply.text and "Пост 1" in reply.text and "Ближайшие посты" in reply.text,
+   reply.text)
+
+tomorrow = (datetime.now().date() + timedelta(days=1)).strftime("%d.%m.%Y")
+far = (datetime.now().date() + timedelta(days=10)).strftime("%d.%m.%Y")
+dm, core, stub = build([])
+dm.add_content_plan_item({"topic": "Завтрашний пост", "rubric": "Польза", "format": "Пост",
+                          "date": tomorrow})
+dm.add_content_plan_item({"topic": "Дальний пост", "rubric": "Польза", "format": "Пост",
+                          "date": far})
+decision = core.router._rules("что выходит завтра")
+ok("«что выходит завтра» — дата завтра в аргументах",
+   decision is not None and decision.args.get("date") == tomorrow,
+   getattr(decision, "args", None))
+reply = core.handle("что выходит завтра")
+ok("в ответе только завтрашний пост",
+   "Завтрашний пост" in reply.text and "Дальний пост" not in reply.text, reply.text)
+
+dm, core, stub = seeded_plan()
+plan_ids = [str(item["id"]) for item in dm.get_content_plan()]
+dm._data["calendar_events"] = [{"id": "ev_3", "date": "03.04.2027",
+                                "title": "Пост 3", "link": plan_ids[-1]}]
+dm.save()
+decision = core.router._rules("измени дату поста на 5 декабря")
+ok("«измени дату поста на 5 декабря» — edit_record по плану",
+   decision is not None and decision.tool == "edit_record"
+   and decision.args.get("section") == "content_plan"
+   and str(decision.args.get("fields", {}).get("date") or "").startswith("05.12."),
+   getattr(decision, "args", None))
+new_date = str((decision.args or {}).get("fields", {}).get("date") or "")
+reply = core.handle("измени дату поста на 5 декабря")
+dates = [str(item.get("date")) for item in dm.get_content_plan()]
+ok("дата изменена у одной позиции, остальные не тронуты",
+   dates[:2] == ["01.04.2027", "02.04.2027"] and dates[2] == new_date, dates)
+ok("ответ называет новую дату", new_date in reply.text, reply.text)
+ok("событие календаря переехало вместе с датой",
+   str(dm.get_calendar_events()[0].get("date")) == new_date, dm.get_calendar_events())
+decision = core.router._rules("измени дату второго поста на 5 декабря")
+ok("порядковый номер работает и при смене даты",
+   decision is not None and decision.args.get("item_id") == plan_ids[1],
+   getattr(decision, "args", None))
+decision = core.router._rules("перенеси пост на завтра")
+ok("действие «перенеси» не превращается в чтение ближайших",
+   decision is None or decision.tool != "get_project_context",
+   getattr(decision, "tool", None))
+
+dm, core, stub = build([])
+decision = core.router._rules("добавь в план пост про осень")
+ok("«добавь в план пост про осень» — одна позиция с темой из фразы",
+   decision is not None and decision.tool == "create_content_plan"
+   and decision.args.get("topics") == ["осень"], getattr(decision, "args", None))
+reply = core.handle("добавь в план пост про осень")
+plan = dm.get_content_plan()
+ok("пост про осень в плане",
+   len(plan) == 1 and "осень" in str(plan[0].get("topic")).lower(), plan)
+ok("фраза про осень не дёргает модель", not stub.calls, stub.calls)
+
+# --- проверка плана и Excel не перехватывают чтение таблицы ---
+dm, core, stub = seeded_plan()
+for text in ("покажи таблицу постов", "покажи все посты", "покажи план"):
+    decision = core.router._rules(text)
+    ok(f"«{text}» — чтение плана, а не проверка и не Excel",
+       decision is not None and decision.tool == "get_project_context"
+       and decision.args.get("scope") == "plan", getattr(decision, "tool", None))
+reply = core.handle("покажи таблицу постов")
+ok("в ответе таблица позиций",
+   "Позиции плана (3)" in reply.text and "01.04.2027" in reply.text, reply.text)
+ok("«покажи таблицу постов» не дёргает модель и не просит подтверждения",
+   not stub.calls and not reply.needs_confirmation, stub.calls)
+decision = core.router._rules("проверь, все ли посты с подписями")
+ok("проверка плана не перехвачена чтением таблицы",
+   decision is not None and decision.tool == "validate_plan", getattr(decision, "tool", None))
+decision = core.router._rules("выгрузи план в таблицу")
+ok("экспорт в таблицу — по-прежнему честный отказ",
+   decision is not None and not decision.tool and "Excel" in (decision.clarify or ""),
+   getattr(decision, "clarify", None))
 
 # --- обработка всех фото просит подтверждение ---
 from PIL import Image

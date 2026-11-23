@@ -561,7 +561,7 @@ class AITools:
                 "effect": out.get("effect", {}),
                 "undo": {"op": "restore_section", "section": key, "data": before}}
 
-    def context(self, scope: str = "all") -> Dict[str, Any]:
+    def context(self, scope: str = "all", date: str = "") -> Dict[str, Any]:
         strat = self.dm.get_strategy() or {}
         profile = self.dm.get_brand_profile() or {}
         plan = self.dm.get_content_plan()
@@ -579,6 +579,10 @@ class AITools:
             summary += self._strategy_lines(strat)
         elif scope_key == "profile":
             summary += self._profile_lines(profile)
+        elif scope_key == "plan":
+            summary += self._plan_lines(plan)
+        elif scope_key == "upcoming":
+            summary += self._upcoming_lines(plan, date)
         return {
             "summary": summary,
             "effect": {"profile_filled": bool(profile.get("client_name")),
@@ -630,6 +634,63 @@ class AITools:
         for key, value in filled:
             lines.append(f"· {PROFILE_LABELS.get(key, key)}: {value[:120]}"
                          + ("…" if len(value) > 120 else ""))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _plan_lines(plan: List[Dict[str, Any]], limit: int = 15) -> str:
+        """Позиции плана таблицей строк: дата, тема, статус. Ничего не меняет."""
+        if not plan:
+            return "\nКонтент-план пуст — скажите «создай контент-план на 10 постов»."
+
+        def key(item: Dict[str, Any]) -> Tuple[int, datetime]:
+            try:
+                return 0, datetime.strptime(str(item.get("date") or "").strip(), "%d.%m.%Y")
+            except ValueError:
+                return 1, datetime.min
+
+        ordered = sorted(plan, key=key)
+        lines = [f"\nПозиции плана ({len(ordered)}):"]
+        for item in ordered[:limit]:
+            lines.append(f"· {item.get('date') or 'без даты'} — {item.get('topic') or 'без темы'} "
+                         f"[{item.get('status') or 'Черновик'}]")
+        if len(ordered) > limit:
+            lines.append(f"… и ещё {len(ordered) - limit}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _upcoming_lines(plan: List[Dict[str, Any]], date: str = "", limit: int = 5) -> str:
+        """Ближайшие посты: с сегодняшнего дня или строго на дату из фразы."""
+        today = datetime.now().date()
+        target = None
+        if date:
+            try:
+                target = datetime.strptime(date, "%d.%m.%Y").date()
+            except ValueError:
+                target = None
+        rows = []
+        for item in plan:
+            try:
+                when = datetime.strptime(str(item.get("date") or "").strip(), "%d.%m.%Y").date()
+            except ValueError:
+                continue
+            if target is not None:
+                if when != target:
+                    continue
+            elif when < today:
+                continue
+            rows.append((when, item))
+        head = (f"\nПосты на {target.strftime('%d.%m.%Y')}: {len(rows)}" if target is not None
+                else f"\nБлижайшие посты (с {today.strftime('%d.%m.%Y')}): {len(rows)}")
+        if not rows:
+            tail = ("· на эту дату постов нет" if target is not None
+                    else "· в плане нет дат в будущем — «покажи план» покажет все позиции")
+            return head + "\n" + tail
+        lines = [head]
+        for when, item in sorted(rows, key=lambda row: row[0])[:limit]:
+            lines.append(f"· {when.strftime('%d.%m.%Y')} — {item.get('topic') or 'без темы'} "
+                         f"[{item.get('status') or 'Черновик'}]")
+        if len(rows) > limit:
+            lines.append(f"… и ещё {len(rows) - limit}")
         return "\n".join(lines)
 
     @staticmethod
@@ -769,10 +830,28 @@ class AITools:
         if target is None:
             return {"summary": f"Запись {item_id} не найдена", "effect": {}, "undo": {}}
         before = copy.deepcopy(records)
-        target.update({k: v for k, v in (fields or {}).items() if k != "id"})
+        changed = {k: v for k, v in (fields or {}).items() if k != "id"}
+        target.update(changed)
+        undo: Dict[str, Any] = {"op": "restore_section", "section": section, "data": before}
+        moved = 0
+        if section == "content_plan" and str(changed.get("date") or "").strip():
+            # дата позиции — источник правды: связанное событие календаря едет за ней
+            events = self.dm._data.setdefault("calendar_events", [])
+            events_before = copy.deepcopy(events)
+            for event in events:
+                if str(event.get("link") or "") == item_id:
+                    event["date"] = changed["date"]
+                    moved += 1
+            if moved:
+                undo = {"op": "restore_sections",
+                        "sections": {"content_plan": before, "calendar_events": events_before}}
         self.dm.save()
-        return {"summary": "Изменения сохранены", "effect": {"id": item_id},
-                "undo": {"op": "restore_section", "section": section, "data": before}}
+        details = ", ".join(f"{key} = {value}" for key, value in changed.items()) or "без изменений"
+        name = str(target.get("topic") or target.get("title") or item_id)
+        tail = f"; событий календаря: {moved}" if moved else ""
+        return {"summary": f"Обновил «{name}»: {details}{tail}",
+                "effect": {"id": item_id, "fields": sorted(changed)},
+                "undo": undo}
 
     def delete_record(self, section: str = "", item_id: str = "") -> Dict[str, Any]:
         records = self._records(section)
@@ -2228,6 +2307,23 @@ class AIRouter:
             return RouteDecision("get_project_context", {"scope": "media"}, "rules")
         if re.search(r"(покажи|какие|что|сколько|список).{0,25}(стратег|блок|раздел|kpi|кпи)", low):
             return RouteDecision("get_project_context", {"scope": "strategy"}, "rules")
+        # «покажи ближайшие посты», «что выходит завтра» — чтение плана, без действий
+        if re.search(r"ближайш\w*\s+(?:пост|публикац|позици|запис)"
+                     r"|что\s+(?:выходит|выйдет|публику\w*|запланирован\w*|стоит\s+в\s+плане)"
+                     r"|(?:пост|публикац)\w*\s+на\s+(?:завтра|сегодня|послезавтра)", low) \
+                and not re.search(r"перенес|перестав|измени|поменяй|смени|сдвинь|поставь"
+                                  r"|добавь|создай|запланируй|удали|убери", low):
+            upcoming_args = {"scope": "upcoming"}
+            day = _relative_day(low)
+            if day:
+                upcoming_args["date"] = day
+            return RouteDecision("get_project_context", upcoming_args, "rules")
+        # «покажи таблицу постов» — таблица плана, а не проверка и не выгрузка
+        if (re.search(r"(?:покажи|выведи|открой|покажите)\s+(?:мне\s+)?(?:все\s+|всю\s+|весь\s+)?"
+                      r"(?:таблиц\w*|список)?\s*(?:контент-?\s*)?(?:план|пост|позици)", low)
+                and not re.search(r"календар|pdf|печат|распечат|принтер|excel|эксель|xlsx|csv"
+                                  r"|в\s+таблиц", low)):
+            return RouteDecision("get_project_context", {"scope": "plan"}, "rules")
         if re.search(r"(сделай|собери|создай|разработай).{0,20}стратеги", low):
             return RouteDecision("create_strategy", {"brief": text}, "rules")
         if re.search(r"(придумай|предложи|подбери).{0,25}(тем|идеи)", low):
@@ -2270,7 +2366,10 @@ class AIRouter:
             return RouteDecision("export_pdf",
                                  {"kind": "strategy" if "стратег" in low else "plan"},
                                  "rules")
-        if re.search(r"excel|эксель|xlsx|csv|\bв таблиц", low):
+        # Excel — только когда просят выгрузку: «покажи таблицу постов» остаётся чтением
+        if (re.search(r"excel|эксель|xlsx|csv", low)
+                or re.search(r"(?:выгруз\w*|экспорт\w*|сохран\w*|сделай\w*|сформиру\w*"
+                             r"|выведи\w*|перенес\w*)\s.{0,25}таблиц", low)):
             return RouteDecision("", {}, "rules", 0.4,
                                  "Excel-выгрузки нет: план и стратегию выгружаю в PDF "
                                  "(«экспортируй план в PDF»), а публикации — пакетом "
@@ -2299,7 +2398,27 @@ class AIRouter:
                                      "В плане нет позиций — ставить в календарь нечего.")
             return RouteDecision("schedule_posts",
                                  {"plan_ids": ids, "dates": _week_dates(len(ids))}, "rules")
-        one_post = re.search(r"(?:добавь|создай|напиши|нужен|поставь)\s+(?:ещ[её]\s+)?(?:один\s+)?пост\b",
+        # «измени дату поста на 5 декабря» — смена даты одной позиции, а не недельная расстановка
+        if (re.search(r"(?:измени|поменяй|смени|перенеси|переставь|сдвинь|поставь)\w*"
+                      r".{0,30}дат\w*", low)
+                and re.search(r"пост|позици|публикац|план", low)):
+            when = _date_from_words(low) or _relative_day(low)
+            if not when:
+                return RouteDecision("", {}, "rules", 0.4,
+                                     "На какую дату перенести? Скажите так: "
+                                     "«измени дату поста на 5 декабря».")
+            item_id, problem = self._plan_id_from_text(text)
+            if problem:
+                return RouteDecision("", {}, "rules", 0.4, problem)
+            if not item_id:
+                return RouteDecision("", {}, "rules", 0.4,
+                                     "В плане нет позиций — менять дату не у чего. "
+                                     "Сначала добавьте пост.")
+            return RouteDecision("edit_record",
+                                 {"section": "content_plan", "item_id": item_id,
+                                  "fields": {"date": when}}, "rules")
+        one_post = re.search(r"(?:добавь|создай|напиши|нужен|поставь)\s+(?:ещ[её]\s+)?"
+                             r"(?:в\s+(?:контент-?\s*)?план[а-яё]*\s+)?(?:один\s+)?пост\b",
                              low)
         if one_post:
             tail = low[one_post.end():]
@@ -2821,6 +2940,20 @@ def _date_from_words(text: str) -> str:
     return ""
 
 
+def _relative_day(text: str) -> str:
+    """«сегодня»/«завтра»/«послезавтра» → дата dd.mm.YYYY, иначе пустая строка."""
+    low = str(text or "").lower()
+    if "послезавтра" in low:
+        offset = 2
+    elif "завтра" in low:
+        offset = 1
+    elif "сегодня" in low:
+        offset = 0
+    else:
+        return ""
+    return (datetime.now().date() + timedelta(days=offset)).strftime("%d.%m.%Y")
+
+
 def _path_from_text(text: str) -> str:
     """Путь из фразы: «C:\\foto» или «/home/foto» — без кавычек и хвоста."""
     match = re.search(r"[A-Za-z]:\\[^\s\"'«»]+|/[^\s\"'«»]+/[^\s\"'«»]*", text)
@@ -2976,7 +3109,8 @@ class AICore:
     # --- setup ---
     def _register_tools(self) -> None:
         self.registry.register(ToolSpec("get_project_context", "прочитать профиль, стратегию, план, календарь",
-                                        {"scope": str}, self.tools.context, read_only=True))
+                                        {"scope": str, "date": str}, self.tools.context,
+                                        read_only=True))
         self.registry.register(ToolSpec("search_knowledge", "поиск по материалам и документам",
                                         {"query": str, "limit": int}, self.tools.search_knowledge,
                                         read_only=True))
