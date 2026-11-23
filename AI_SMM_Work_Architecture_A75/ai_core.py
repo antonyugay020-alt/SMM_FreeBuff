@@ -794,6 +794,12 @@ class AITools:
                 "effect": {"sections": [s["id"] for s in built]},
                 "undo": {"op": "restore_strategy", "data": before}}
 
+    def strategy_section_exists(self, section_id: str = "") -> bool:
+        """Подтверждаем только существующий блок: неизвестный id — сразу «не найден», без вопроса."""
+        strategy = self.dm.get_strategy() or {}
+        return any(str(section.get("id")) == str(section_id or "")
+                   for section in (strategy.get("sections") or []))
+
     def update_strategy_section(self, section_id: str = "", content: str = "") -> Dict[str, Any]:
         strategy = self.dm.get_strategy()
         target = next((s for s in strategy.get("sections", []) if s.get("id") == section_id), None)
@@ -3546,7 +3552,9 @@ class AICore:
                                             (self.dm.get_strategy() or {}).get("sections"))))
         self.registry.register(ToolSpec("update_strategy_section", "править блок стратегии",
                                         {"section_id": str, "content": str},
-                                        self.tools.update_strategy_section))
+                                        self.tools.update_strategy_section,
+                                        needs_confirmation=lambda a: self.tools.strategy_section_exists(
+                                            str(a.get("section_id") or ""))))
         self.registry.register(ToolSpec("create_content_plan", "создать позиции контент-плана",
                                         {"count": int, "rubrics": list, "start": str,
                                          "period_days": int, "topics": list,
@@ -3563,7 +3571,8 @@ class AICore:
         self.registry.register(ToolSpec("create_shooting_task", "ТЗ на съёмку из позиции плана",
                                         {"plan_id": str}, self.tools.create_shooting_task))
         self.registry.register(ToolSpec("update_kpis", "обновить KPI стратегии",
-                                        {"kpis": list}, self.tools.update_kpis))
+                                        {"kpis": list}, self.tools.update_kpis,
+                                        needs_confirmation=lambda a: True))
         self.registry.register(ToolSpec("add_record", "добавить запись в план/календарь/ТЗ",
                                         {"section": str, "fields": dict}, self.tools.add_record))
         self.registry.register(ToolSpec("edit_record", "изменить запись плана/календаря/ТЗ",
@@ -3808,6 +3817,40 @@ class AICore:
                 return (f"Убрать «{name}» из списка «{folder}»?" if name
                         else f"Убрать материал из списка «{folder}»?")
             return "Убрать материал из списка?"
+        if tool == "update_kpis":
+            def cleaned(rows):
+                return [row for row in (rows or []) if isinstance(row, dict)
+                        and any(str(value or "").strip() for value in row.values())]
+
+            rows = cleaned(args.get("kpis"))
+            current = cleaned((self.dm.get_strategy() or {}).get("kpis"))
+            shown = []
+            for row in rows[:4]:
+                metric = str(row.get("metric") or "").strip() or "показатель"
+                was = str(row.get("current") or "").strip() or "—"
+                target = str(row.get("target") or "").strip() or "—"
+                deadline = str(row.get("deadline") or "").strip()
+                line = f"«{metric}» {was} → {target}"
+                if deadline:
+                    line += f" к {deadline}"
+                shown.append(line)
+            listed = "; ".join(shown)
+            if len(rows) > 4:
+                listed += f"; и ещё {len(rows) - 4}"
+            body = f" — {listed}" if listed else ""
+            return (f"Заменить KPI стратегии: было строк {len(current)}, "
+                    f"станет {len(rows)}{body}? Прежние KPI будут заменены.")
+        if tool == "update_strategy_section":
+            section_id = str(args.get("section_id") or "")
+            strategy = self.dm.get_strategy() or {}
+            section = next((row for row in (strategy.get("sections") or [])
+                            if str(row.get("id")) == section_id), None)
+            title = str((section or {}).get("title") or section_id).strip()
+            content = str(args.get("content") or "").strip()
+            tail = (" Новый текст пустой — блок опустеет." if not content else
+                    f" Новый текст ({len(content)} знаков): «{content[:80]}"
+                    f"{'…' if len(content) > 80 else ''}».")
+            return f"Переписать блок «{title}» стратегии?{tail} Прежний текст заменится."
         if tool == "review_captions":
             plan = self.dm.get_content_plan()
             plan_id = str(args.get("plan_id") or "")

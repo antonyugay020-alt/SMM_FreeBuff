@@ -543,7 +543,15 @@ reply = core.handle("покажи материалы")
 ok("чтение материалов даёт список", "Материалов готовых" in reply.text, reply.text)
 reply = core.handle("какие блоки в стратегии")
 ok("чтение стратегии называет блоки", "Аудитория" in reply.text, reply.text)
-core.handle("обнови kpi: охват 5000")
+reply = core.handle("обнови kpi: охват 5000")
+ok("обновление KPI сначала спрашивает «да/нет»", reply.needs_confirmation, reply.text)
+ok("в вопросе KPI: было/станет и новое значение",
+   "было строк" in reply.text and "5000" in reply.text
+   and "заменены" in reply.text, reply.text)
+ok("до «да» KPI не тронуты",
+   not ((dm.get_strategy() or {}).get("kpis") or []),
+   (dm.get_strategy() or {}).get("kpis"))
+reply = core.handle("да")
 kpis = (dm.get_strategy() or {}).get("kpis") or []
 ok("KPI обновлены из фразы",
    any(str(row.get("current")) == "5000" for row in kpis), kpis)
@@ -559,6 +567,25 @@ decision = core.router._rules("перепиши блок аудитория")
 ok("правка блока без текста — спрашивает текст",
    decision is not None and not decision.tool and "Аудитория" in (decision.clarify or ""),
    getattr(decision, "clarify", None))
+reply = core.handle("перепиши блок аудитория на город 25–40, кофе домой")
+ok("правка блока стратегии сначала спрашивает «да/нет»", reply.needs_confirmation, reply.text)
+ok("в вопросе название блока и начало нового текста",
+   "Аудитория" in reply.text and "город 25–40" in reply.text
+   and "заменится" in reply.text, reply.text)
+before_block = str(dm.get_strategy_section_by_id("s1").get("content") or "")
+ok("до «да» текст блока прежний", before_block == "Город 25–40.", before_block)
+reply = core.handle("да")
+after_block = str(dm.get_strategy_section_by_id("s1").get("content") or "")
+ok("после «да» блок переписан",
+   "город 25–40" in after_block and after_block != before_block, after_block)
+reply = core.run_tool("update_strategy_section", section_id="s1", content="Своя обжарка и точка.")
+ok("путь окна переписывает блок без второго вопроса",
+   not reply.needs_confirmation
+   and dm.get_strategy_section_by_id("s1")["content"] == "Своя обжарка и точка.", reply.text)
+reply = core.run_tool("update_kpis", kpis=[{"metric": "Охват", "current": "1", "target": "2"}])
+ok("путь окна пишет KPI без второго вопроса",
+   not reply.needs_confirmation
+   and len((dm.get_strategy() or {}).get("kpis") or []) == 1, reply.text)
 for text in ("добавь раздел в стратегию про конкурентов",
              "удали блок стратегии про конкурентов",
              "перемести материал m1 в папку рилс"):
