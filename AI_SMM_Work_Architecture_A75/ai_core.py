@@ -570,8 +570,13 @@ class AITools:
                    f"Блоков стратегии: {len(strat.get('sections') or [])}, "
                    f"позиций плана: {len(plan)}, событий: {len(events)}, "
                    f"медиа: {len(self.dm.get_media_sources()) + len(self.dm.get_media_ready())}.")
-        if str(scope or "").lower() == "calendar":
+        scope_key = str(scope or "").lower()
+        if scope_key == "calendar":
             summary += self._calendar_lines(events)
+        elif scope_key == "media":
+            summary += self._media_lines()
+        elif scope_key == "strategy":
+            summary += self._strategy_lines(strat)
         return {
             "summary": summary,
             "effect": {"profile_filled": bool(profile.get("client_name")),
@@ -579,6 +584,38 @@ class AITools:
                        "plan_items": len(plan)},
             "undo": {},
         }
+
+    def _media_lines(self, limit: int = 12) -> str:
+        """Материалы для чтения: что уже готово, что исходники."""
+        ready = self.dm.get_media_ready()
+        sources = self.dm.get_media_sources()
+        lines = [f"\nМатериалов готовых: {len(ready)}, исходников: {len(sources)}."]
+        if not ready and not sources:
+            lines.append("Материалов нет — импортируйте файлы в «Публикациях».")
+            return "\n".join(lines)
+        for record in (ready or sources)[:limit]:
+            lines.append(f"· {record.get('name') or 'без имени'} — "
+                         f"{record.get('status') or 'в работе'}")
+        return "\n".join(lines)
+
+    def _strategy_lines(self, strat: Dict[str, Any]) -> str:
+        """Блоки стратегии и KPI для чтения."""
+        sections = strat.get("sections") or []
+        kpis = strat.get("kpis") or []
+        lines = [f"\nБлоки стратегии ({len(sections)}):"]
+        if not sections:
+            lines.append("· пусто — скажите «создай стратегию»")
+        for section in sections:
+            text = str(section.get("content") or "").strip()
+            lines.append(f"· {section.get('title') or 'блок'}: {text[:80]}"
+                         + ("…" if len(text) > 80 else ""))
+        if kpis:
+            rows = ", ".join(f"{row.get('metric')} {row.get('current') or '—'}"
+                             f"/{row.get('target') or '—'}" for row in kpis)
+            lines.append(f"KPI: {rows}")
+        else:
+            lines.append("KPI не заданы.")
+        return "\n".join(lines)
 
     @staticmethod
     def _calendar_lines(events: List[Dict[str, Any]], limit: int = 10) -> str:
@@ -2159,8 +2196,14 @@ class AIRouter:
             return RouteDecision("undo_last", {}, "rules")
         if re.search(r"журнал|история действий|что ты сделал", low):
             return RouteDecision("show_journal", {}, "rules")
-        if re.search(r"сколько (постов|позиций|событий|медиа)|что в проекте|контекст проекта", low):
+        if re.search(r"сколько.{0,20}(постов|позиций|событий|медиа|файлов|блоков)"
+                     r"|что в проекте|контекст проекта", low):
             return RouteDecision("get_project_context", {"scope": "all"}, "rules")
+        if re.search(r"(покажи|какие|что|список|сколько).{0,25}(материал|медиа|файл|публикац)"
+                     r"|(что|какие).{0,20}(готов|можно).{0,20}(опубликов|вылож)", low):
+            return RouteDecision("get_project_context", {"scope": "media"}, "rules")
+        if re.search(r"(покажи|какие|что|сколько|список).{0,25}(стратег|блок|раздел|kpi|кпи)", low):
+            return RouteDecision("get_project_context", {"scope": "strategy"}, "rules")
         if re.search(r"(сделай|собери|создай|разработай).{0,20}стратеги", low):
             return RouteDecision("create_strategy", {"brief": text}, "rules")
         if re.search(r"(придумай|предложи|подбери).{0,25}(тем|идеи)", low):
@@ -2242,18 +2285,84 @@ class AIRouter:
                 args["period_days"] = 1
             if topic or when:
                 return RouteDecision("create_content_plan", args, "rules")
-        if re.search(r"убери|удали|сотри|сними", low) and re.search(r"пост|позици|запись", low):
+        if re.search(r"(добавь|создай|заведи).{0,20}(блок|раздел).{0,20}стратег", low):
+            return RouteDecision("", {}, "rules", 0.4,
+                                 "Новый блок точечно не добавлю: могу переписать существующий "
+                                 "или собрать стратегию заново.")
+        if re.search(r"удали|убери|сотри", low) and re.search(r"блок|раздел", low) \
+                and re.search(r"стратег", low):
+            return RouteDecision("", {}, "rules", 0.4,
+                                 "Удалять блоки стратегии не умею: могу переписать блок "
+                                 "или собрать стратегию заново.")
+        if re.search(r"(перемести|перенеси|переложи).{0,25}(материал|медиа|файл)", low):
+            return RouteDecision("", {}, "rules", 0.4,
+                                 "Переносить материалы между папками не умею. Могу убрать материал "
+                                 "из списка или импортировать файлы заново.")
+        if re.search(r"(выложи|загрузи|запости|сделай).{0,25}(материал|медиа|файл)"
+                     r".{0,25}(url|ссылк|публичн)", low):
+            media_id = self._publish_media_id(text)
+            if not media_id:
+                return RouteDecision("", {}, "rules", 0.4, self._publish_help())
+            return RouteDecision("host_media", {"media_id": media_id}, "rules")
+        if re.search(r"(импорт\w*|загрузи\w*|добавь)\s.{0,25}(материал|фото|файл|видео|папк)", low):
+            path = _path_from_text(text)
+            if path:
+                return RouteDecision("import_media", {"paths": [path]}, "rules")
+            return RouteDecision("", {}, "rules", 0.4,
+                                 "Пришли путь к папке или файлу — например C:\\foto.")
+        if re.search(r"(сожми|уменьши|сжатие|оптимизируй|оптимизация).{0,25}"
+                     r"(фото|фотограф|изображен|картинк|материал)", low):
+            return self._photo_rule(["compress"])
+        if re.search(r"(обрежь|обрез|кадрируй|кадрирован).{0,25}(фото|фотограф|изображен|картинк|материал)",
+                     low):
+            return self._photo_rule(["crop"])
+        if re.search(r"(обнови|поставь|поменяй|измени|задай).{0,20}(kpi|кпи|цел\w*|показател)", low):
+            kpis = _kpis_from_text(text)
+            if not kpis:
+                return RouteDecision("", {}, "rules", 0.4,
+                                     "Скажи метрику и значение: «обнови KPI: охват 5000».")
+            return RouteDecision("update_kpis", {"kpis": kpis}, "rules")
+        if re.search(r"(перепиши|поменяй|измени|обнови|отредактируй|замени).{0,20}(блок|раздел)", low):
+            section = self._strategy_section_from_text(low)
+            if section is None:
+                return RouteDecision("", {}, "rules", 0.4,
+                                     "Какой блок править? Назови его: «перепиши блок Аудитория».")
+            new_text = low.split(" на ", 1)[1].strip(" «»\"" ) if " на " in low else ""
+            if not new_text:
+                return RouteDecision("", {}, "rules", 0.4,
+                                     f"Что написать в блоке «{section.get('title')}»? "
+                                     "Пришли новый текст целиком.")
+            return RouteDecision("update_strategy_section",
+                                 {"section_id": str(section.get("id") or ""),
+                                  "content": new_text}, "rules")
+        if re.search(r"убери|удали|сотри|сними", low) and re.search(
+                r"пост|позици|запись|событи|тз|задани|материал|файл|метрик", low):
             if re.search(r"\bвсе\b|\bвсё\b", low):
                 return RouteDecision("", {}, "rules", 0.4,
-                                     "Удалять всё сразу не буду: назови номер или дату поста.")
-            plan_id, problem = self._plan_id_from_text(text)
+                                     "Удалять всё сразу не буду: назови номер или дату.")
+            if re.search(r"публикац", low) and not re.search(r"план|календар|тз", low):
+                return RouteDecision("", {}, "rules", 0.4,
+                                     "Снять публикацию в Instagram может только человек. "
+                                     "Убрать позицию плана или событие календаря?")
+            if re.search(r"материал|файл", low) and not re.search(r"план|календар", low):
+                material_id = self._material_id_from_text(text)
+                if material_id:
+                    return RouteDecision("delete_material", {"item_id": material_id}, "rules")
+                return RouteDecision("", {}, "rules", 0.4,
+                                     "Не понял, какой материал убрать — назови его id или имя.")
+            section = self._section_from_words(low)
+            if not section:
+                return RouteDecision("", {}, "rules", 0.4,
+                                     "Уточни, откуда удалить: из плана, календаря или ТЗ.")
+            item_id, problem = self._record_id_from_text(section, text)
             if problem:
                 return RouteDecision("", {}, "rules", 0.4, problem)
-            if not plan_id:
+            if not item_id:
                 return RouteDecision("", {}, "rules", 0.4,
-                                     "В плане нет позиций — удалять нечего.")
+                                     f"В разделе «{self.SECTION_LABELS[section]}» записей нет — "
+                                     "удалять нечего.")
             return RouteDecision("delete_record",
-                                 {"section": "content_plan", "item_id": plan_id}, "rules")
+                                 {"section": section, "item_id": item_id}, "rules")
         if re.search(r"(проверь|проверить|проверка).{0,25}(план|публикац|позиц)"
                      r"|(план|публикац).{0,20}провер", low):
             return RouteDecision("validate_plan", {}, "rules")
@@ -2489,6 +2598,86 @@ class AIRouter:
             return "", f"В плане {len(items)} позиций — номера {number} нет."
         return self._latest_plan_id(), ""
 
+    SECTION_LABELS = {"content_plan": "плане", "calendar_events": "календаре",
+                      "shooting_tasks": "ТЗ", "post_metrics": "метриках"}
+
+    def _section_from_words(self, low: str) -> str:
+        """Раздел из фразы: календарь, ТЗ, метрики или план; пусто — если не сказано."""
+        if re.search(r"календар|событи|встреч", low):
+            return "calendar_events"
+        if re.search(r"\bтз\b|техзадани|съ[её]мк|задани[ея]", low):
+            return "shooting_tasks"
+        if re.search(r"метрик|аналитик|охват|показател", low):
+            return "post_metrics"
+        if re.search(r"план|пост|позици", low):
+            return "content_plan"
+        return ""
+
+    def _records_data(self) -> Dict[str, Any]:
+        """Данные проекта для поиска записи: календарь, ТЗ, метрики."""
+        return (self.data_getter() if hasattr(self, "data_getter") else {}) or {}
+
+    def _record_id_from_text(self, section: str, text: str) -> Tuple[str, str]:
+        """Запись раздела по дате или номеру, иначе последняя; и текст отказа."""
+        if section == "content_plan":
+            return self._plan_id_from_text(text)
+        items = list(self._records_data().get(section) or [])
+        label = self.SECTION_LABELS[section]
+        if not items:
+            return "", f"В разделе «{label}» записей нет — удалять нечего."
+        for item in items:
+            date = str(item.get("date") or "").strip()
+            if date and date in text:
+                return str(item.get("id") or ""), ""
+        low = text.lower()
+        match = (re.search(r"(?:№|номер\s*)(\d{1,3})", low)
+                 or re.search(r"(\d{1,3})(?:-?[йоге])?\s*(?:пост|позици|событи|записи)", low))
+        if match:
+            number = int(match.group(1))
+            if 1 <= number <= len(items):
+                return str(items[number - 1].get("id") or ""), ""
+            return "", f"В разделе «{label}» {len(items)} записей — номера {number} нет."
+        return str(items[-1].get("id") or ""), ""
+
+    def _photo_rule(self, operations: List[str]) -> RouteDecision:
+        """Обработка фото по всем готовым материалам или честный отказ."""
+        ids = [str(record.get("id")) for record in self.dm_media() if record.get("id")]
+        if not ids:
+            return RouteDecision("", {}, "rules", 0.4,
+                                 "Нет готовых материалов для обработки — сначала импортируйте фото.")
+        return RouteDecision("batch_photo", {"media_ids": ids, "operations": operations}, "rules")
+
+    def _material_id_from_text(self, text: str) -> str:
+        """id записи из «Материалов» по id или имени — только существующая запись."""
+        known: Dict[str, Dict[str, Any]] = {}
+        for records in (self._records_data().get("other_files") or {}).values():
+            for record in records or []:
+                if record.get("id"):
+                    known[str(record["id"])] = record
+        match = re.search(r"(?:материал\w*|файл\w*)\s*[№#:]?\s*([\w\-\.]{1,40})",
+                          text, re.IGNORECASE)
+        if match:
+            candidate = match.group(1).lower()
+            for key in known:
+                if key.lower() == candidate:
+                    return key
+            for key, record in known.items():
+                if str(record.get("name") or "").lower() == candidate:
+                    return key
+        for key in known:
+            if re.search(rf"(?<!\w){re.escape(key)}(?!\w)", text, re.IGNORECASE):
+                return key
+        return ""
+
+    def _strategy_section_from_text(self, low: str) -> Optional[Dict[str, Any]]:
+        """Блок стратегии, название которого есть во фразе."""
+        strategy = (self.strategy_getter() if hasattr(self, "strategy_getter") else {}) or {}
+        for section in strategy.get("sections") or []:
+            title = str(section.get("title") or "").strip().lower()
+            if title and title in low:
+                return section
+        return None
+
     def _publish_media_id(self, text: str) -> str:
         """id материала из фразы «опубликуй материал <id>» — только существующий материал."""
         known = {str(record.get("id")): record for record in self.dm_media() if record.get("id")}
@@ -2576,6 +2765,19 @@ def _date_from_words(text: str) -> str:
         if when >= today:
             return when.strftime("%d.%m.%Y")
     return ""
+
+
+def _path_from_text(text: str) -> str:
+    """Путь из фразы: «C:\\foto» или «/home/foto» — без кавычек и хвоста."""
+    match = re.search(r"[A-Za-z]:\\[^\s\"'«»]+|/[^\s\"'«»]+/[^\s\"'«»]*", text)
+    return match.group(0) if match else ""
+
+
+def _kpis_from_text(text: str) -> List[Dict[str, str]]:
+    """KPI из фразы: «обнови KPI: охват 5000» → [{metric, current}]."""
+    rows = re.findall(r"([а-яёa-z][а-яёa-z ]{2,20}?)\s+(\d{2,9})", text.lower())
+    return [{"metric": metric.strip(" :,;"), "current": value}
+            for metric, value in rows if metric.strip(" :,;")]
 
 
 def _week_dates(count: int) -> List[str]:
@@ -2711,6 +2913,7 @@ class AICore:
         self.router.plan_getter = dm.get_content_plan
         self.router.profile_getter = dm.get_brand_profile
         self.router.strategy_getter = dm.get_strategy
+        self.router.data_getter = lambda: dm._data
         self.tools.router = self.router
 
         self.interview: Dict[str, Any] = {}

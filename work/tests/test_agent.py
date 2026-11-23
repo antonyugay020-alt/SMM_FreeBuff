@@ -407,6 +407,78 @@ ok("пост удалён из плана", len(dm.get_content_plan()) == 2, len
 ok("удалён последний, а не первый",
    all(str(item["id"]) != last_id for item in dm.get_content_plan()))
 
+# --- удаление берёт раздел из фразы, а не всегда контент-план ---
+dm, core, stub = seeded_plan()
+dm._data["calendar_events"] = [
+    {"id": "ev_1", "date": "01.04.2027", "title": "Пост 1", "link": "cp_1"},
+    {"id": "ev_2", "date": "02.04.2027", "title": "Пост 2", "link": "cp_2"}]
+dm._data["shooting_tasks"] = [{"id": "st_1", "plan_id": "cp_1", "title": "ТЗ 1"}]
+dm.save()
+core.handle("удали пост из календаря")
+ok("удаление из календаря не трогает план",
+   len(dm.get_content_plan()) == 3, len(dm.get_content_plan()))
+ok("удаление из календаря убрало событие",
+   len(dm.get_calendar_events()) == 1, dm.get_calendar_events())
+core.handle("удали ТЗ")
+ok("удаление ТЗ не трогает план",
+   len(dm.get_content_plan()) == 3 and not dm.get_shooting_tasks(),
+   (len(dm.get_content_plan()), dm.get_shooting_tasks()))
+core.handle("удали пост из плана")
+ok("удаление из плана убрало позицию", len(dm.get_content_plan()) == 2,
+   len(dm.get_content_plan()))
+decision = core.router._rules("удали запись")
+ok("непонятный раздел — уточняет, а не удаляет",
+   decision is not None and not decision.tool and "Уточни" in (decision.clarify or ""),
+   getattr(decision, "clarify", None))
+
+# --- публикации, медиа и стратегия: чтение и действия правилами ---
+dm, core, stub = seeded_plan()
+core.run_tool("create_strategy", brief="кофейня", sections=[
+    {"id": "s1", "title": "Аудитория", "content": "Город 25–40."},
+    {"id": "s2", "title": "Позиционирование", "content": "Своя обжарка."}])
+dm._data["other_files"] = {"Материалы": [{"id": "mat_1", "name": "p1.jpg"}]}
+dm._data["media_ready"].append({"id": "m1", "name": "p1.jpg", "type": "image",
+                                "path": "/nope/p1.jpg", "status": "approved"})
+dm.save()
+for text, tool, scope in [
+        ("покажи материалы", "get_project_context", "media"),
+        ("что готово к публикации", "get_project_context", "media"),
+        ("какие блоки в стратегии", "get_project_context", "strategy"),
+        ("какие у нас kpi", "get_project_context", "strategy"),
+        ("выложи материал m1 на публичный url", "host_media", None),
+        ("обнови kpi: охват 5000", "update_kpis", None),
+        ("убери материал mat_1 из списка", "delete_material", None),
+        ("сожми фото до 1080", "batch_photo", None),
+        ("обрежь фотографии под квадрат", "batch_photo", None)]:
+    decision = core.router._rules(text)
+    ok(f"«{text}» — {tool}",
+       decision is not None and decision.tool == tool
+       and (scope is None or decision.args.get("scope") == scope),
+       getattr(decision, "tool", None))
+ok("публикации и стратегия тоже без модели", not stub.calls, stub.calls)
+reply = core.handle("покажи материалы")
+ok("чтение материалов даёт список", "Материалов готовых" in reply.text, reply.text)
+reply = core.handle("какие блоки в стратегии")
+ok("чтение стратегии называет блоки", "Аудитория" in reply.text, reply.text)
+core.handle("обнови kpi: охват 5000")
+kpis = (dm.get_strategy() or {}).get("kpis") or []
+ok("KPI обновлены из фразы",
+   any(str(row.get("current")) == "5000" for row in kpis), kpis)
+core.handle("убери материал mat_1 из списка")
+ok("материал убран из «Материалов»",
+   not dm.get_other_files().get("Материалы"), dm.get_other_files())
+decision = core.router._rules("перепиши блок аудитория")
+ok("правка блока без текста — спрашивает текст",
+   decision is not None and not decision.tool and "Аудитория" in (decision.clarify or ""),
+   getattr(decision, "clarify", None))
+for text in ("добавь раздел в стратегию про конкурентов",
+             "удали блок стратегии про конкурентов",
+             "перемести материал m1 в папку рилс"):
+    decision = core.router._rules(text)
+    ok(f"«{text}» — честное объяснение, а не «Не понял»",
+       decision is not None and not decision.tool and bool(decision.clarify),
+       getattr(decision, "clarify", None))
+
 # --- нет плана: отказ понятный, а не «Не хватает данных» ---
 dm, core, stub = build([])
 reply = core.handle("напиши подпись к первому посту")
