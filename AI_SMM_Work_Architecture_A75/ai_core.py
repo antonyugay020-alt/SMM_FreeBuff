@@ -688,7 +688,8 @@ class AITools:
         lines = [head]
         for when, item in sorted(rows, key=lambda row: row[0])[:limit]:
             lines.append(f"· {when.strftime('%d.%m.%Y')} — {item.get('topic') or 'без темы'} "
-                         f"[{item.get('status') or 'Черновик'}]")
+                         f"[{item.get('status') or 'Черновик'}]"
+                         + ("" if str(item.get("caption") or "").strip() else " · без подписи"))
         if len(rows) > limit:
             lines.append(f"… и ещё {len(rows) - limit}")
         return "\n".join(lines)
@@ -831,6 +832,16 @@ class AITools:
             return {"summary": f"Запись {item_id} не найдена", "effect": {}, "undo": {}}
         before = copy.deepcopy(records)
         changed = {k: v for k, v in (fields or {}).items() if k != "id"}
+        name = str(target.get("topic") or target.get("title") or item_id)
+        effective = {k: v for k, v in changed.items()
+                     if str(target.get(k) if target.get(k) is not None else "") != str(v)}
+        if not effective:
+            # названная дата/поле уже стоят: не пишем «Обновил» там, где ничего не менялось
+            asked = ", ".join(f"{key} = {value}" for key, value in changed.items()) or "изменения"
+            return {"summary": f"Менять нечего: у «{name}» уже {asked}",
+                    "effect": {"id": item_id, "changed": False},
+                    "undo": NOOP_UNDO}
+        changed = effective
         target.update(changed)
         undo: Dict[str, Any] = {"op": "restore_section", "section": section, "data": before}
         moved = 0
@@ -847,7 +858,6 @@ class AITools:
                         "sections": {"content_plan": before, "calendar_events": events_before}}
         self.dm.save()
         details = ", ".join(f"{key} = {value}" for key, value in changed.items()) or "без изменений"
-        name = str(target.get("topic") or target.get("title") or item_id)
         tail = f"; событий календаря: {moved}" if moved else ""
         return {"summary": f"Обновил «{name}»: {details}{tail}",
                 "effect": {"id": item_id, "fields": sorted(changed)},
@@ -2309,7 +2319,8 @@ class AIRouter:
             return RouteDecision("get_project_context", {"scope": "strategy"}, "rules")
         # «покажи ближайшие посты», «что выходит завтра» — чтение плана, без действий
         if re.search(r"ближайш\w*\s+(?:пост|публикац|позици|запис)"
-                     r"|что\s+(?:выходит|выйдет|публику\w*|запланирован\w*|стоит\s+в\s+плане)"
+                     r"|что\s+(?:выходит|выйдет|публику\w*|запланирован\w*|стоит\s+в\s+плане"
+                     r"|писать|постить)"
                      r"|(?:пост|публикац)\w*\s+на\s+(?:завтра|сегодня|послезавтра)", low) \
                 and not re.search(r"перенес|перестав|измени|поменяй|смени|сдвинь|поставь"
                                   r"|добавь|создай|запланируй|удали|убери", low):
@@ -2385,7 +2396,8 @@ class AIRouter:
                     args["dry_run"] = "0"
                 return RouteDecision("instagram_publish", args, "rules")
             return RouteDecision("", {}, "rules", 0.4, self._publish_help())
-        if re.search(r"календар", low) and re.search(r"добав|перенес|синхрон|расстав|постав", low):
+        if re.search(r"календар", low) and re.search(
+                r"добав|перенес|синхрон|расстав|постав|сделай|создай|собери|сформируй", low):
             return RouteDecision("sync_plan_events", {}, "rules")
         if re.search(r"календар", low) and re.search(r"покажи|открой|посмотри|что в|какие|список", low):
             return RouteDecision("get_project_context", {"scope": "calendar"}, "rules")

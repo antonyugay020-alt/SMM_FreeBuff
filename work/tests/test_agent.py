@@ -637,6 +637,45 @@ ok("несуществующая дата — вопрос, а не выдумк
    broken is not None and not broken.tool and "дату" in (broken.clarify or ""),
    getattr(broken, "clarify", None))
 
+# --- названная дата уже стоит: менять нечего, а не «Обновил» ---
+dm, core, stub = seeded_plan()
+before_dates = [str(item.get("date")) for item in dm.get_content_plan()]
+decision = core.router._rules("измени дату поста на 02.04.2027")
+ok("та же дата — всё равно edit_record по нужной позиции",
+   decision is not None and decision.tool == "edit_record",
+   getattr(decision, "tool", None))
+reply = core.handle("измени дату поста на 02.04.2027")
+ok("та же дата — ответ «менять нечего», а не «Обновил»",
+   "Менять нечего" in reply.text and "Обновил" not in reply.text, reply.text)
+ok("даты после такой фразы не изменились",
+   [str(item.get("date")) for item in dm.get_content_plan()] == before_dates,
+   dm.get_content_plan())
+
+# --- «что писать завтра» и «сделай календарь на месяц» ---
+dm, core, stub = build([])
+dm.add_content_plan_item({"topic": "Завтрашний пост", "rubric": "Польза", "format": "Пост",
+                          "date": tomorrow})
+decision = core.router._rules("что писать завтра")
+ok("«что писать завтра» — чтение плана на завтра",
+   decision is not None and decision.tool == "get_project_context"
+   and decision.args.get("scope") == "upcoming"
+   and decision.args.get("date") == tomorrow, getattr(decision, "args", None))
+reply = core.handle("что писать завтра")
+ok("в ответе пост на завтра и пометка об отсутствии подписи",
+   "Завтрашний пост" in reply.text and "без подписи" in reply.text, reply.text)
+ok("«что писать завтра» не дёргает модель", not stub.calls, stub.calls)
+
+dm, core, stub = seeded_plan()
+decision = core.router._rules("сделай календарь на месяц")
+ok("«сделай календарь на месяц» — события из плана",
+   decision is not None and decision.tool == "sync_plan_events",
+   getattr(decision, "tool", None))
+reply = core.handle("сделай календарь на месяц")
+ok("события календаря созданы по датам плана",
+   len(dm.get_calendar_events()) == 3, dm.get_calendar_events())
+ok("ответ говорит, сколько событий пришло из плана", "Из плана" in reply.text, reply.text)
+ok("«сделай календарь на месяц» не дёргает модель", not stub.calls, stub.calls)
+
 # --- будущих позиций нет: двигаем последнюю, а не молчим ---
 dm, core, stub = build([])
 dm.add_content_plan_item({"topic": "Старый", "rubric": "Польза", "format": "Пост",
