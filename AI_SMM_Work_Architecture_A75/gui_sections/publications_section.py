@@ -922,6 +922,13 @@ class PublicationsSection(DataSection):
             f"Материал: {item.get('name', '')}\nЧто сделать:", list(presets), 0, False)
         if not ok:
             return
+        answer = QMessageBox.question(
+            self, "Обработка фото",
+            f"Обработать «{item.get('name', '')}» ({choice})?\n\n"
+            "Запись перейдёт на готовый файл, исходник останется на диске.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if answer != QMessageBox.Yes:
+            return
         media_id = item.get("id")
         text = self.run_full("batch_photo", media_ids=[media_id], operations=presets[choice])
         summary = text.splitlines()[0] if text else ""

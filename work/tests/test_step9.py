@@ -51,6 +51,16 @@ pubs.QMessageBox.information = staticmethod(
     lambda *args, **kwargs: messages.append(args[2] if len(args) > 2 else ""))
 pubs.QInputDialog.getItem = staticmethod(
     lambda *args, **kwargs: (pubs.PHOTO_PRESETS[0][0], True))
+answers = {"question": pubs.QMessageBox.Yes}
+questions = []
+
+
+def fake_question(parent, title, text, *args, **kwargs):
+    questions.append(text)
+    return answers["question"]
+
+
+pubs.QMessageBox.question = staticmethod(fake_question)
 
 # --- 1. «Повторить обработку» в просмотре реально прогоняет batch_photo ---
 section.preview.repeat_btn.click()
@@ -101,7 +111,23 @@ section.preview._compare()
 assert messages and "Исходник не сохранён" in messages[-1], messages
 print("COMPARE_NO_SOURCE_OK")
 
-# --- 5. «Обработать фото» в шапке по-прежнему работает (общая функция) ---
+# --- 5. отказ в диалоге ничего не обрабатывает ---
+answers["question"] = pubs.QMessageBox.No
+updated = next(m for m in dm.get_media_ready() if m["id"] == media_id)
+section._select(updated)
+before_processed = list(updated.get("processed") or [])
+before_name = updated["name"]
+questions.clear()
+section.preview.repeat_btn.click()
+app.processEvents()
+now = next(m for m in dm.get_media_ready() if m["id"] == media_id)
+assert now["name"] == before_name, now
+assert list(now.get("processed") or []) == before_processed, now
+assert questions and "Обработать «t9_shot_web.jpg»" in questions[-1], questions
+print("PROCESS_CANCEL_OK")
+answers["question"] = pubs.QMessageBox.Yes
+
+# --- 6. «Обработать фото» в шапке по-прежнему работает (общая функция) ---
 messages.clear()
 section._process_media()
 app.processEvents()

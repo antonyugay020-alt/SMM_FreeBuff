@@ -1510,6 +1510,40 @@ class AITools:
             self.dm.save()
         return ids, problems
 
+    IMPORT_ZONE_NAMES = {"sources": "Источники", "references": "Референсы",
+                         "ready": "Готовые материалы"}
+    MATERIAL_FOLDER_NAMES = {"archive": "Архив", "buffer": "Буфер",
+                             "documents": "Документы", "references": "Референсы",
+                             "templates": "Шаблоны"}
+
+    def import_media_would_change(self, args: Dict[str, Any]) -> int:
+        """Сколько файлов реально добавится в медиатеку: несуществующие не в счёт."""
+        zone = str(args.get("zone") or "sources")
+        if zone not in self.MEDIA_ZONES:
+            return 0
+        return len([path for path in map(Path, args.get("paths") or []) if path.exists()])
+
+    def import_materials_would_change(self, args: Dict[str, Any]) -> int:
+        """Сколько файлов добавится в «Материалы» выбранной папки."""
+        folder = str(args.get("folder") or "buffer").strip().lower()
+        if folder not in MATERIAL_FOLDERS:
+            return 0
+        return len([path for path in map(Path, args.get("paths") or []) if path.exists()])
+
+    def export_pdf_would_change(self, args: Dict[str, Any]) -> int:
+        """Есть ли что выгружать: позиций плана или блоков стратегии."""
+        kind = str(args.get("kind") or "plan").strip().lower()
+        if kind == "plan":
+            return len(self.dm.get_content_plan())
+        if kind == "strategy":
+            return len((self.dm.get_strategy() or {}).get("sections") or [])
+        return 0
+
+    def instagram_pack_would_change(self) -> Tuple[int, int]:
+        """Пакет: сколько готовых материалов и позиций плана в него попадёт."""
+        approved = [m for m in self.dm.get_media_ready() if m.get("status") == "approved"]
+        return len(approved), len(self.dm.get_content_plan())
+
     def import_media(self, paths: Optional[List[str]] = None, zone: str = "sources") -> Dict[str, Any]:
         zone_key = self.MEDIA_ZONES.get(str(zone or "sources"), "media_sources")
         before = copy.deepcopy(self.dm._data.get(zone_key, []))
@@ -3647,7 +3681,9 @@ class AICore:
                                         {"plan_id": str}, self.tools.review_captions,
                                         needs_confirmation=lambda a: self.tools.review_would_change(a)))
         self.registry.register(ToolSpec("import_media", "импорт файлов в проект",
-                                        {"paths": list, "zone": str}, self.tools.import_media))
+                                        {"paths": list, "zone": str}, self.tools.import_media,
+                                        needs_confirmation=lambda a: self.tools
+                                        .import_media_would_change(a) > 0))
         self.registry.register(ToolSpec("batch_photo", "кадрирование, цвет, сжатие",
                                         {"media_ids": list, "operations": list},
                                         self.tools.batch_photo,
@@ -3678,12 +3714,18 @@ class AICore:
                                         in ("0", "false", "нет")))
         self.registry.register(ToolSpec("instagram_pack",
                                         "пакет под Instagram: файлы, подписи, замечания",
-                                        {"dest": str}, self.tools.instagram_pack))
+                                        {"dest": str}, self.tools.instagram_pack,
+                                        needs_confirmation=lambda a: sum(self.tools
+                                        .instagram_pack_would_change()) > 0))
         self.registry.register(ToolSpec("export_pdf", "план или стратегия в PDF",
-                                        {"kind": str, "dest": str}, self.tools.export_pdf))
+                                        {"kind": str, "dest": str}, self.tools.export_pdf,
+                                        needs_confirmation=lambda a: self.tools
+                                        .export_pdf_would_change(a) > 0))
         self.registry.register(ToolSpec("import_materials", "импорт файлов в «Материалы»",
                                         {"paths": list, "folder": str},
-                                        self.tools.import_materials))
+                                        self.tools.import_materials,
+                                        needs_confirmation=lambda a: self.tools
+                                        .import_materials_would_change(a) > 0))
         self.registry.register(ToolSpec("delete_material", "убрать материал из списка",
                                         {"item_id": str}, self.tools.delete_material,
                                         needs_confirmation=lambda a: True))
@@ -3908,6 +3950,29 @@ class AICore:
                 return (f"Убрать «{name}» из списка «{folder}»?" if name
                         else f"Убрать материал из списка «{folder}»?")
             return "Убрать материал из списка?"
+        if tool == "import_media":
+            zone = str(args.get("zone") or "sources")
+            count = self.tools.import_media_would_change(args)
+            place = self.tools.IMPORT_ZONE_NAMES.get(zone, "медиатеку")
+            return (f"Добавить в «{place}» файлов: {count}? "
+                    "Файлы скопируются в проект.")
+        if tool == "import_materials":
+            folder = str(args.get("folder") or "buffer").strip().lower()
+            count = self.tools.import_materials_would_change(args)
+            place = self.tools.MATERIAL_FOLDER_NAMES.get(folder, "Материалы")
+            return (f"Добавить в «Материалы» → «{place}» файлов: {count}? "
+                    "Файлы скопируются в проект.")
+        if tool == "export_pdf":
+            kind = str(args.get("kind") or "plan").strip().lower()
+            count = self.tools.export_pdf_would_change(args)
+            what, unit = (("план публикаций", "позиций") if kind != "strategy"
+                           else ("стратегию проекта", "блоков"))
+            return (f"Выгрузить {what} ({unit}: {count}) в PDF? "
+                    "В проекте появится новый файл.")
+        if tool == "instagram_pack":
+            files, posts = self.tools.instagram_pack_would_change()
+            return (f"Собрать пакет под Instagram (файлов: {files}, позиций плана: {posts})? "
+                    "В проекте появится новая папка с копиями.")
         if tool == "sync_plan_events":
             created, planned = self.tools.sync_plan_events_count()
             parts = []

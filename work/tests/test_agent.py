@@ -1509,6 +1509,54 @@ message = core.undo(core.journal.list(1)[0]["id"]).text
 ok("откат с ключами удаляет файл с хостинга",
    bool(host_ok.deleted) and "удалён" in message, (host_ok.deleted, message))
 
+# --- импорт, PDF и пакет спрашивают до записи ---
+imp_dir = Path(tempfile.mkdtemp(prefix="imp_"))
+imp_photo = imp_dir / "t13_import.png"
+imp_photo.write_bytes(b"PNG" * 100)
+imp_doc = imp_dir / "brief.txt"
+imp_doc.write_text("бриф", encoding="utf-8")
+
+dm, core, stub = build([])
+reply = core._execute("import_media", {"paths": [str(imp_photo)], "zone": "ready"}, "agent")
+ok("импорт в медиатеку спрашивает", reply.needs_confirmation, reply.text)
+ok("в вопросе зона и число файлов",
+   "Готовые материалы" in reply.text and "файлов: 1" in reply.text, reply.text)
+ok("до «да» медиатека пуста", not dm.get_media_ready(), dm.get_media_ready())
+core.handle("да")
+ready = dm.get_media_ready()
+ok("после «да» файл в медиатеке", len(ready) == 1, ready)
+Path(ready[0]["path"]).unlink(missing_ok=True)
+
+dm, core, stub = build([])
+reply = core._execute("import_materials", {"paths": [str(imp_doc)], "folder": "documents"},
+                      "agent")
+ok("импорт в «Материалы» спрашивает",
+   reply.needs_confirmation and "Документы" in reply.text and "файлов: 1" in reply.text,
+   reply.text)
+ok("до «да» материалов нет", not dm.get_other_files().get("documents"), dm.get_other_files())
+core.handle("да")
+ok("после «да» материал на месте", len(dm.get_other_files().get("documents") or []) == 1,
+   dm.get_other_files())
+
+dm, core, stub = seeded_plan()
+reply = core._execute("export_pdf", {"kind": "plan", "dest": str(imp_dir)}, "agent")
+ok("выгрузка PDF спрашивает",
+   reply.needs_confirmation and "план публикаций" in reply.text
+   and "позиций: 3" in reply.text, reply.text)
+ok("до «да» файла нет", not list(imp_dir.glob("*.pdf")), list(imp_dir.glob("*.pdf")))
+core.handle("да")
+ok("после «да» PDF появился", bool(list(imp_dir.glob("*.pdf"))), list(imp_dir.glob("*.pdf")))
+
+dm, core, stub = seeded_plan()
+pack_dir = imp_dir / "pack"
+reply = core._execute("instagram_pack", {"dest": str(pack_dir)}, "agent")
+ok("пакет под Instagram спрашивает",
+   reply.needs_confirmation and "позиций плана: 3" in reply.text, reply.text)
+ok("до «да» папки нет", not pack_dir.exists(), pack_dir)
+core.handle("да")
+ok("после «да» пакет собран",
+   bool(list(pack_dir.glob("*/manifest.csv"))), list(pack_dir.iterdir()))
+
 # --- откат без обратной операции: статус записи не меняется ---
 dm, core, stub = build([])
 audit_id = core.journal.log("instagram_publish", {"item_id": "cp_001"},

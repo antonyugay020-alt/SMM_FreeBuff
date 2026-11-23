@@ -70,11 +70,18 @@ answers = {"question": QMessageBox.Yes, "info": []}
 pubs.QMessageBox.information = staticmethod(lambda *a, **k: answers["info"].append(a[2]))
 pubs.QInputDialog.getItem = staticmethod(
     lambda *a, **k: ("Кадрировать 4:5 + цвет + сжатие", True))
+pubs.QMessageBox.question = staticmethod(lambda *a, **k: answers["question"])
 
 section = pubs.PublicationsSection(dm)
 section._select(dm.get_media_ready()[0])
 assert section.preview.image.pixmap() is not None, "превью должно показать файл"
 before_pixmap = section.preview.image.pixmap().cacheKey()
+
+answers["question"] = QMessageBox.No
+name_before = dm.get_media_ready()[0]["name"]
+section._process_media()
+assert dm.get_media_ready()[0]["name"] == name_before, "«Нет» не должен обрабатывать фото"
+answers["question"] = QMessageBox.Yes
 
 section._process_media()
 record = dm.get_media_ready()[0]
