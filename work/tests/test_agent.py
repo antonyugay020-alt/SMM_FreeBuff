@@ -491,6 +491,10 @@ for index in (1, 2):
                                     "type": "image", "path": str(file_path),
                                     "status": "approved"})
 dm.save()
+import ai_core
+
+saved_media_dir = ai_core.MEDIA_IMAGES
+ai_core.MEDIA_IMAGES = photos / "out"   # не пишем готовые файлы в репозиторий
 reply = core.handle("сожми фото до 1080")
 ok("обработка фото просит подтверждение", reply.needs_confirmation, reply.text)
 ok("до подтверждения файлы не тронуты",
@@ -505,6 +509,7 @@ core.handle("да")
 ok("после «да» фото обработаны",
    all("compress" in (record.get("processed") or []) for record in dm._data["media_ready"]),
    [record.get("processed") for record in dm._data["media_ready"]])
+ai_core.MEDIA_IMAGES = saved_media_dir
 
 # --- нет плана: отказ понятный, а не «Не хватает данных» ---
 dm, core, stub = build([])
