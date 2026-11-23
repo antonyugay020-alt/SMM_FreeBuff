@@ -426,11 +426,22 @@ plan = dm.get_content_plan()
 ok("дата из фразы стоит в позиции",
    len(plan) == 1 and str(plan[0].get("date")).startswith("03.03."), plan)
 
-# --- «убери последний пост» удаляет именно его ---
+# --- «убери последний пост» удаляет именно его, но только после «да» ---
 dm, core, stub = seeded_plan()
 last_id = str(dm.get_content_plan()[-1]["id"])
-core.handle("убери последний пост из плана")
-ok("пост удалён из плана", len(dm.get_content_plan()) == 2, len(dm.get_content_plan()))
+reply = core.handle("убери последний пост из плана")
+ok("удаление по фразе просит подтверждение", reply.needs_confirmation, reply.text)
+ok("в вопросе видно, что именно удалят",
+   '"section": "content_plan"' in reply.text and last_id in reply.text, reply.text)
+ok("до «да» ничего не удалено",
+   len(dm.get_content_plan()) == 3, len(dm.get_content_plan()))
+core.handle("нет")
+ok("«нет» ничего не удаляет", len(dm.get_content_plan()) == 3, len(dm.get_content_plan()))
+reply = core.handle("убери последний пост из плана")
+ok("после «нет» фраза снова спрашивает", reply.needs_confirmation, reply.text)
+core.handle("да")
+ok("после «да» пост удалён из плана", len(dm.get_content_plan()) == 2,
+   len(dm.get_content_plan()))
 ok("удалён последний, а не первый",
    all(str(item["id"]) != last_id for item in dm.get_content_plan()))
 
@@ -442,15 +453,20 @@ dm._data["calendar_events"] = [
 dm._data["shooting_tasks"] = [{"id": "st_1", "plan_id": "cp_1", "title": "ТЗ 1"}]
 dm.save()
 core.handle("удали пост из календаря")
+ok("удаление из календаря ждёт подтверждения",
+   len(dm.get_calendar_events()) == 2, dm.get_calendar_events())
+core.handle("да")
 ok("удаление из календаря не трогает план",
    len(dm.get_content_plan()) == 3, len(dm.get_content_plan()))
 ok("удаление из календаря убрало событие",
    len(dm.get_calendar_events()) == 1, dm.get_calendar_events())
 core.handle("удали ТЗ")
+core.handle("да")
 ok("удаление ТЗ не трогает план",
    len(dm.get_content_plan()) == 3 and not dm.get_shooting_tasks(),
    (len(dm.get_content_plan()), dm.get_shooting_tasks()))
 core.handle("удали пост из плана")
+core.handle("да")
 ok("удаление из плана убрало позицию", len(dm.get_content_plan()) == 2,
    len(dm.get_content_plan()))
 decision = core.router._rules("удали запись")
@@ -492,8 +508,11 @@ core.handle("обнови kpi: охват 5000")
 kpis = (dm.get_strategy() or {}).get("kpis") or []
 ok("KPI обновлены из фразы",
    any(str(row.get("current")) == "5000" for row in kpis), kpis)
-core.handle("убери материал mat_1 из списка")
-ok("материал убран из «Материалов»",
+reply = core.handle("убери материал mat_1 из списка")
+ok("удаление материала просит подтверждение",
+   reply.needs_confirmation and bool(dm.get_other_files().get("Материалы")), reply.text)
+core.handle("да")
+ok("после «да» материал убран из «Материалов»",
    not dm.get_other_files().get("Материалы"), dm.get_other_files())
 decision = core.router._rules("перепиши блок аудитория")
 ok("правка блока без текста — спрашивает текст",
@@ -1122,5 +1141,36 @@ ok("без редактора сказано, что его нет", "Редак
 ok("без редактора подпись не тронута",
    dm.get_content_plan_item(item_id)["caption"] == "Готовая подпись.",
    dm.get_content_plan_item(item_id).get("caption"))
+
+# --- модель тоже не удаляет без «да» ---
+dm, core, stub = seeded_plan()
+target_id = str(dm.get_content_plan()[0]["id"])
+dm, core, stub = build([
+    '{"action": "tool", "tool": "delete_record", "args": {"section": "content_plan", '
+    '"item_id": "' + target_id + '"}}',
+    '{"action": "done", "say": "Удалил пост."}'])
+dm.add_content_plan_item({"topic": "Пост 1", "rubric": "Польза", "format": "Пост",
+                          "date": "01.04.2027"})
+reply = core.handle("убери первый пост из плана")
+ok("агент упирается в подтверждение удаления",
+   reply.needs_confirmation and len(dm.get_content_plan()) == 1, reply.text)
+ok("действие ждёт ответа, а не выполнено", len(core.pending or ()) == 2, core.pending)
+core.handle("да")
+ok("после «да» агентское удаление выполнено", not dm.get_content_plan(), dm.get_content_plan())
+
+# --- кнопка в окне удаляет сразу: там свой диалог подтверждения ---
+dm, core, stub = seeded_plan()
+target_id = str(dm.get_content_plan()[0]["id"])
+reply = core.run_tool("delete_record", section="content_plan", item_id=target_id)
+ok("GUI-путь по-прежнему удаляет без вопроса",
+   not reply.needs_confirmation and len(dm.get_content_plan()) == 2,
+   (reply.needs_confirmation, len(dm.get_content_plan())))
+
+dm, core, stub = build([])
+dm._data["other_files"] = {"Материалы": [{"id": "mat_1", "name": "p1.jpg"}]}
+dm.save()
+reply = core.run_tool("delete_material", item_id="mat_1")
+ok("GUI-путь убирает материал без вопроса",
+   not reply.needs_confirmation and not dm.get_other_files().get("Материалы"), reply.text)
 
 print("AGENT_DONE")

@@ -3527,7 +3527,8 @@ class AICore:
                                         {"section": str, "item_id": str, "fields": dict},
                                         self.tools.edit_record))
         self.registry.register(ToolSpec("delete_record", "удалить запись плана/календаря/ТЗ",
-                                        {"section": str, "item_id": str}, self.tools.delete_record))
+                                        {"section": str, "item_id": str}, self.tools.delete_record,
+                                        needs_confirmation=lambda a: True))
         self.registry.register(ToolSpec("sync_plan_events", "события календаря из позиций плана",
                                         {}, self.tools.sync_plan_events))
         self.registry.register(ToolSpec("validate_plan", "проверка плана: даты, подписи, ТЗ",
@@ -3583,7 +3584,8 @@ class AICore:
                                         {"paths": list, "folder": str},
                                         self.tools.import_materials))
         self.registry.register(ToolSpec("delete_material", "убрать материал из списка",
-                                        {"item_id": str}, self.tools.delete_material))
+                                        {"item_id": str}, self.tools.delete_material,
+                                        needs_confirmation=lambda a: True))
         self.registry.register(ToolSpec("export_package", "пакет публикаций за период",
                                         {"date_from": str, "date_to": str, "dest": str},
                                         self.tools.export_package,
