@@ -1539,6 +1539,35 @@ class AITools:
             return len((self.dm.get_strategy() or {}).get("sections") or [])
         return 0
 
+    @staticmethod
+    def _files_word(count: int) -> str:
+        """«1 файл», «2 файла», «5 файлов» — чтобы вопрос не читался как машинный."""
+        last, teens = count % 10, count % 100
+        if last == 1 and teens != 11:
+            return "файл"
+        if last in (2, 3, 4) and teens not in (12, 13, 14):
+            return "файла"
+        return "файлов"
+
+    def video_would_change(self, args: Dict[str, Any]) -> int:
+        """Сколько видео реально попадёт в обработку — без копирования файлов."""
+        seen = set()
+        for _mid, _zone, record in self._media_records(
+                [str(mid) for mid in args.get("media_ids") or []]):
+            source = self._video_source(record)
+            if source is not None:
+                seen.add(str(source))
+        for raw in args.get("paths") or []:
+            path = Path(str(raw)).expanduser()
+            if not path.is_file() or path.suffix.lower() not in VIDEO_SUFFIXES:
+                continue
+            if str(path) in seen:
+                continue
+            seen.add(str(path))
+        if seen and not self._video_processor().ffmpeg_available:
+            return 0
+        return len(seen)
+
     def instagram_pack_would_change(self) -> Tuple[int, int]:
         """Пакет: сколько готовых материалов и позиций плана в него попадёт."""
         approved = [m for m in self.dm.get_media_ready() if m.get("status") == "approved"]
@@ -3692,13 +3721,15 @@ class AICore:
                                         "видео под площадку: 9:16 или 1:1, сжатие",
                                         {"media_ids": list, "platform": str, "paths": list},
                                         self.tools.process_video,
-                                        needs_confirmation=lambda a: len(a.get("media_ids") or []) > 5))
+                                        needs_confirmation=lambda a: self.tools
+                                        .video_would_change(a) > 0))
         self.registry.register(ToolSpec("make_subtitles",
                                         "распознать речь: .srt и видео с субтитрами",
                                         {"media_ids": list, "language": str, "burn": bool,
                                          "paths": list},
                                         self.tools.make_subtitles,
-                                        needs_confirmation=lambda a: len(a.get("media_ids") or []) > 3))
+                                        needs_confirmation=lambda a: self.tools
+                                        .video_would_change(a) > 0))
         self.registry.register(ToolSpec("instagram_status",
                                         "проверить доступ к Instagram (read-only)",
                                         {}, self.tools.instagram_status, read_only=True))
@@ -3950,6 +3981,20 @@ class AICore:
                 return (f"Убрать «{name}» из списка «{folder}»?" if name
                         else f"Убрать материал из списка «{folder}»?")
             return "Убрать материал из списка?"
+        if tool in ("process_video", "make_subtitles"):
+            count = self.tools.video_would_change(args)
+            many = f"{count} {self.tools._files_word(count)}"
+            if tool == "process_video":
+                target = str(args.get("platform") or "instagram_reels").strip().lower()
+                label = VIDEO_TARGETS.get(target, ("под площадку", ""))[0]
+                return (f"Обработать видео: {many} ({label})? "
+                        "Готовые файлы появятся в проекте, запись перейдёт на них.")
+            burn = args.get("burn", True)
+            action = ("Распознать речь и выжечь субтитры" if burn
+                      else "Распознать речь в .srt")
+            tail = (", а видео заменится версией с субтитрами." if burn
+                    else ". Исходное видео не меняется.")
+            return f"{action}: {many}? Появится .srt в проекте{tail}"
         if tool == "import_media":
             zone = str(args.get("zone") or "sources")
             count = self.tools.import_media_would_change(args)

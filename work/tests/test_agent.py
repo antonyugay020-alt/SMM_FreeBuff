@@ -1557,6 +1557,92 @@ core.handle("да")
 ok("после «да» пакет собран",
    bool(list(pack_dir.glob("*/manifest.csv"))), list(pack_dir.iterdir()))
 
+class FakeVideo:
+    """Обработчик видео без ffmpeg: пишет заглушки и запоминает вызовы."""
+
+    ffmpeg_available = True
+
+    def __init__(self):
+        self.exported = []
+        self.burned = []
+
+    def export_for_platform(self, source, target, dest):
+        Path(dest).write_bytes(b"MP4" * 50)
+        self.exported.append((source, target))
+        return True
+
+    def get_video_info(self, path):
+        return {"width": 1080, "height": 1920}
+
+    def extract_audio(self, source):
+        audio = Path(source).with_suffix(".wav")
+        audio.write_bytes(b"WAV" * 10)
+        return str(audio)
+
+    def transcribe(self, audio, language="ru"):
+        return {"segments": [{"start": 0.0, "end": 1.0, "text": "привет"}]}
+
+    def generate_srt(self, segments, dest):
+        Path(dest).write_text("1\n00:00:00,000 --> 00:00:01,000\nпривет\n",
+                              encoding="utf-8")
+        return True
+
+    def burn_subtitles(self, source, srt, dest):
+        Path(dest).write_bytes(b"MP4" * 50)
+        self.burned.append(str(dest))
+        return True
+
+
+# --- видео и субтитры спрашивают даже для одного файла ---
+video_dir = Path(tempfile.mkdtemp(prefix="vid_"))
+clip = video_dir / "t14_clip.mp4"
+clip.write_bytes(b"MP4" * 100)
+
+dm, core, stub = build([])
+dm._data["media_ready"].append({"id": "mv1", "name": "t14_clip.mp4", "type": "video",
+                                "path": str(clip)})
+dm.save()
+video = FakeVideo()
+core.tools.video = video
+reply = core._execute("process_video",
+                      {"media_ids": ["mv1"], "platform": "instagram_reels"}, "agent")
+ok("видео спрашивает подтверждение и для одного файла", reply.needs_confirmation, reply.text)
+ok("в вопросе число файлов и площадка",
+   "1 файл" in reply.text and "Reels 9:16" in reply.text, reply.text)
+ok("до «да» видео не обработано",
+   not video.exported and dm.get_media_ready()[0]["path"] == str(clip),
+   (video.exported, dm.get_media_ready()[0]))
+core.handle("нет")
+ok("«нет» не трогает видео", not video.exported, video.exported)
+core._execute("process_video", {"media_ids": ["mv1"], "platform": "instagram_reels"},
+              "agent")
+core.handle("да")
+record = dm.get_media_ready()[0]
+ok("после «да» запись на готовом файле",
+   bool(video.exported) and Path(record["path"]).is_file()
+   and Path(record["path"]) != clip, (video.exported, record))
+Path(record["path"]).unlink(missing_ok=True)
+
+dm, core, stub = build([])
+dm._data["media_ready"].append({"id": "mv2", "name": "t14_clip.mp4", "type": "video",
+                                "path": str(clip)})
+dm.save()
+video = FakeVideo()
+core.tools.video = video
+reply = core._execute("make_subtitles",
+                      {"media_ids": ["mv2"], "language": "ru", "burn": True}, "agent")
+ok("субтитры спрашивают подтверждение и для одного файла",
+   reply.needs_confirmation, reply.text)
+ok("в вопросе число файлов и операция",
+   "1 файл" in reply.text and "выжечь субтитры" in reply.text, reply.text)
+ok("до «да» .srt нет", not list((Path(dm.data_dir) / "subtitles").glob("*.srt")))
+core.handle("да")
+srt = list((Path(dm.data_dir) / "subtitles").glob("*.srt"))
+ok("после «да» субтитры сделаны и видео заменено",
+   bool(srt) and bool(video.burned) and Path(dm.get_media_ready()[0]["path"]).is_file(),
+   (srt, video.burned))
+Path(dm.get_media_ready()[0]["path"]).unlink(missing_ok=True)
+
 # --- откат без обратной операции: статус записи не меняется ---
 dm, core, stub = build([])
 audit_id = core.journal.log("instagram_publish", {"item_id": "cp_001"},
