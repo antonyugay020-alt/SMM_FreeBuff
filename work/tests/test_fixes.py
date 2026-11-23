@@ -60,7 +60,11 @@ after = [i["date"] for i in dm.get_content_plan()]
 print("3 dates:", before, "->", after, "dupes:", len(after) - len(set(after)))
 if len(after) - len(set(after)):
     fails.append(f"даты дублируются: {after}")
-if after[len(before):] and min(after[len(before):]) <= max(before):
+def _as_date(value):
+    from datetime import datetime as _dt
+    return _dt.strptime(str(value), "%d.%m.%Y")
+
+if after[len(before):] and min(map(_as_date, after[len(before):])) <= max(map(_as_date, before)):
     fails.append("новый план начался не после последней даты")
 
 # 4. слияние профиля

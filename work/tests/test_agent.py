@@ -339,6 +339,85 @@ ok("итог календарной фразы — про перенос, а н�
    "план" in (reply.text or "").lower() or "календар" in (reply.text or "").lower(),
    reply.text)
 
+# --- обычные фразы SMM-специалиста: решает правило, без модели ---
+def seeded_plan(count=3):
+    dm, core, stub = build([])
+    for day in range(1, count + 1):
+        dm.add_content_plan_item({"topic": f"Пост {day}", "rubric": "Польза", "format": "Пост",
+                                  "date": f"{day:02d}.04.2027"})
+    return dm, core, stub
+
+
+dm, core, stub = seeded_plan()
+for text, tool in [
+        ("поставь посты на следующую неделю", "schedule_posts"),
+        ("перенеси посты на следующую неделю", "schedule_posts"),
+        ("подготовь ТЗ на съёмку", "create_shooting_task"),
+        ("распечатай стратегию", "export_pdf"),
+        ("поставь хештеги к посту", "write_captions"),
+        ("убери последний пост из плана", "delete_record"),
+        ("добавь пост про латте", "create_content_plan"),
+        ("что зашло за месяц", "analyze_performance")]:
+    decision = core.router._rules(text)
+    ok(f"«{text}» — {tool}", decision is not None and decision.tool == tool,
+       getattr(decision, "tool", None))
+ok("частотные фразы не дёргают модель", not stub.calls, stub.calls)
+ok("аналитика за месяц — 30 дней",
+   core.router._rules("что зашло за месяц").args.get("period_days") == 30)
+ok("аналитика за квартал — 90 дней",
+   core.router._rules("что зашло за квартал").args.get("period_days") == 90)
+
+# --- «поставь посты на следующую неделю» реально меняет даты ---
+dm, core, stub = seeded_plan()
+reply = core.handle("поставь посты на следующую неделю")
+ok("недельная фраза выполнена сразу",
+   not reply.needs_confirmation and "Запланировал" in reply.text, reply.text)
+dates = [str(item.get("date")) for item in dm.get_content_plan()]
+ok("посты перенесены на следующую неделю",
+   all(date not in ("01.04.2027", "02.04.2027", "03.04.2027") for date in dates), dates)
+ok("после переноса статус — запланировано",
+   all(item.get("status") == "Запланировано" for item in dm.get_content_plan()),
+   [item.get("status") for item in dm.get_content_plan()])
+
+dm, core, stub = seeded_plan(5)
+reply = core.handle("перенеси посты на следующую неделю")
+ok("пять постов — просит подтверждение", reply.needs_confirmation, reply.text)
+core.handle("да")
+ok("после «да» пять постов запланированы",
+   all(item.get("status") == "Запланировано" for item in dm.get_content_plan()),
+   [item.get("status") for item in dm.get_content_plan()])
+
+# --- один пост по фразе: тема и дата из текста ---
+dm, core, stub = build([])
+core.handle("добавь пост про латте")
+plan = dm.get_content_plan()
+ok("«добавь пост про латте» — одна позиция", len(plan) == 1, plan)
+ok("тема взята из фразы", "латте" in str(plan[0].get("topic")).lower(), plan[0].get("topic"))
+dm, core, stub = build([])
+core.handle("добавь пост на 3 марта про латте")
+plan = dm.get_content_plan()
+ok("дата из фразы стоит в позиции",
+   len(plan) == 1 and str(plan[0].get("date")).startswith("03.03."), plan)
+
+# --- «убери последний пост» удаляет именно его ---
+dm, core, stub = seeded_plan()
+last_id = str(dm.get_content_plan()[-1]["id"])
+core.handle("убери последний пост из плана")
+ok("пост удалён из плана", len(dm.get_content_plan()) == 2, len(dm.get_content_plan()))
+ok("удалён последний, а не первый",
+   all(str(item["id"]) != last_id for item in dm.get_content_plan()))
+
+# --- нет плана: отказ понятный, а не «Не хватает данных» ---
+dm, core, stub = build([])
+reply = core.handle("напиши подпись к первому посту")
+ok("подпись без плана — понятный отказ",
+   "позиций" in reply.text and "plan_id" not in reply.text, reply.text)
+reply = core.handle("убери последний пост из плана")
+ok("удаление без плана — понятный отказ", "нечего" in reply.text, reply.text)
+reply = core.handle("подготовь ТЗ на съёмку")
+ok("ТЗ без плана — понятный ответ",
+   "план" in reply.text.lower() and "plan_id" not in reply.text, reply.text)
+
 # --- стратегия из строк, а не словарей, не роняет инструмент ---
 dm, core, stub = build([
     '{"action": "tool", "tool": "create_strategy", "args": {"sections": '

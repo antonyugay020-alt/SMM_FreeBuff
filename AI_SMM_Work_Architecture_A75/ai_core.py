@@ -2179,11 +2179,10 @@ class AIRouter:
             return RouteDecision("create_post_cycle",
                                  {"count": int(cycle.group(1)),
                                   "period_days": _period_days(low)}, "rules")
-        if re.search(r"(создай|сделай).{0,15}(тз|задание на съемку)", low):
+        if re.search(r"(создай|сделай|подготовь|напиши|составь).{0,15}(тз|задание на съ[её]мку)", low):
             plan_id = self._latest_plan_without_task()
             if not plan_id:
-                return RouteDecision("create_shooting_task", {},
-                                     "rules", 0.4,
+                return RouteDecision("", {}, "rules", 0.4,
                                      "Нет позиции плана без ТЗ. Сначала добавьте пост в план.")
             return RouteDecision("create_shooting_task", {"plan_id": plan_id}, "rules")
         video_ask = re.search(r"видео.{0,30}(рилс|reels|тикток|tiktok|шортс|shorts|пост|1:1|ютуб|youtube)"
@@ -2200,7 +2199,7 @@ class AIRouter:
             return RouteDecision("make_subtitles",
                                  {"paths": paths, "language": "ru",
                                   "burn": "srt" not in low}, "rules")
-        if re.search(r"pdf|печатн", low) and re.search(r"план|стратег|выгруз", low):
+        if re.search(r"pdf|печатн|распечат|на печать|принтер", low) and re.search(r"план|стратег|выгруз", low):
             return RouteDecision("export_pdf",
                                  {"kind": "strategy" if "стратег" in low else "plan"},
                                  "rules")
@@ -2219,6 +2218,42 @@ class AIRouter:
             return RouteDecision("sync_plan_events", {}, "rules")
         if re.search(r"календар", low) and re.search(r"покажи|открой|посмотри|что в|какие|список", low):
             return RouteDecision("get_project_context", {"scope": "calendar"}, "rules")
+        week_ask = re.search(r"на\s+(?:следующ\w+\s+)?неделю|по\s+дням|на\s+дни", low)
+        if week_ask and re.search(r"(?:поставь|перенес\w*|расстав\w*|распредел\w*|заплан\w*)"
+                                  r".{0,20}?(?:пост|позици|публикац)", low):
+            ids = [str(item.get("id")) for item in self.dm_plan()]
+            if not ids:
+                return RouteDecision("", {}, "rules", 0.4,
+                                     "В плане нет позиций — ставить в календарь нечего.")
+            return RouteDecision("schedule_posts",
+                                 {"plan_ids": ids, "dates": _week_dates(len(ids))}, "rules")
+        one_post = re.search(r"(?:добавь|создай|напиши|нужен|поставь)\s+(?:ещ[её]\s+)?(?:один\s+)?пост\b",
+                             low)
+        if one_post:
+            tail = low[one_post.end():]
+            topic = tail.split("про ", 1)[1] if "про " in tail else ""
+            topic = re.split(r"[.!?;]", topic)[0].strip(" ,\n\t")
+            args: Dict[str, Any] = {"count": 1, "period_days": 7}
+            when = _date_from_words(low)
+            if topic:
+                args["topics"] = [topic]
+            if when:
+                args["start"] = when
+                args["period_days"] = 1
+            if topic or when:
+                return RouteDecision("create_content_plan", args, "rules")
+        if re.search(r"убери|удали|сотри|сними", low) and re.search(r"пост|позици|запись", low):
+            if re.search(r"\bвсе\b|\bвсё\b", low):
+                return RouteDecision("", {}, "rules", 0.4,
+                                     "Удалять всё сразу не буду: назови номер или дату поста.")
+            plan_id, problem = self._plan_id_from_text(text)
+            if problem:
+                return RouteDecision("", {}, "rules", 0.4, problem)
+            if not plan_id:
+                return RouteDecision("", {}, "rules", 0.4,
+                                     "В плане нет позиций — удалять нечего.")
+            return RouteDecision("delete_record",
+                                 {"section": "content_plan", "item_id": plan_id}, "rules")
         if re.search(r"(проверь|проверить|проверка).{0,25}(план|публикац|позиц)"
                      r"|(план|публикац).{0,20}провер", low):
             return RouteDecision("validate_plan", {}, "rules")
@@ -2229,12 +2264,12 @@ class AIRouter:
         if re.search(r"аналитик|что зашло|что сработал|метрик|вовлеч[её]нност", low):
             return RouteDecision("analyze_performance",
                                  {"period_days": _period_days(low)}, "rules")
-        if re.search(r"подпись|подписи|caption|хэштег", low):
+        if re.search(r"подпись|подписи|caption|хештег|хэштег|hashtag", low):
             plan_id, problem = self._plan_id_from_text(text)
             if problem:
                 return RouteDecision("", {}, "rules", 0.4, problem)
             if not plan_id:
-                return RouteDecision("write_captions", {}, "rules", 0.4,
+                return RouteDecision("", {}, "rules", 0.4,
                                      "В плане пока нет позиций — не к чему писать подпись.")
             return RouteDecision("write_captions", {"plan_id": plan_id}, "rules")
         return None
@@ -2498,12 +2533,57 @@ def _first_int(text: str) -> Optional[int]:
 
 
 def _period_days(text: str) -> int:
-    match = re.search(r"на\s+(\d{1,2})\s*(дн|недел|месяц)", text)
+    """Период в днях: «на 2 недели», «за месяц», «за 3 дня», «за квартал»."""
+    match = (re.search(r"(?:на|за|в)\s+(\d{1,2})\s*(дн|недел|месяц|год)", text)
+             or re.search(r"(\d{1,2})\s*(дн\w*|недел\w*|месяц\w*|год\w*)", text))
+    if match:
+        amount = int(match.group(1))
+        unit = match.group(2)
+        if unit.startswith("недел"):
+            return amount * 7
+        if unit.startswith("месяц"):
+            return amount * 30
+        if unit.startswith("год"):
+            return amount * 365
+        return amount
+    if "квартал" in text:
+        return 90
+    if "месяц" in text:
+        return 30
+    return 7
+
+
+MONTH_PREFIXES = (("янв", 1), ("фев", 2), ("мар", 3), ("апр", 4), ("июн", 6), ("июл", 7),
+                  ("авг", 8), ("сен", 9), ("окт", 10), ("ноя", 11), ("дек", 12), ("ма", 5))
+
+
+def _date_from_words(text: str) -> str:
+    """«3 марта» → 03.03.2027 (ближайшая будущая дата), иначе пустая строка."""
+    match = re.search(r"\b(\d{1,2})\s+([а-яё]+)", text)
     if not match:
-        return 7
-    amount = int(match.group(1))
-    unit = match.group(2)
-    return amount * 7 if unit.startswith("недел") else amount * 30 if unit.startswith("месяц") else amount
+        return ""
+    day = int(match.group(1))
+    word = match.group(2)
+    month = next((number for prefix, number in MONTH_PREFIXES if word.startswith(prefix)), 0)
+    if not month:
+        return ""
+    today = datetime.now().date()
+    for year in (today.year, today.year + 1):
+        try:
+            when = datetime(year, month, day).date()
+        except ValueError:
+            return ""
+        if when >= today:
+            return when.strftime("%d.%m.%Y")
+    return ""
+
+
+def _week_dates(count: int) -> List[str]:
+    """Даты со следующего понедельника, по одной на позицию, не больше семи."""
+    today = datetime.now().date()
+    start = today + timedelta(days=7 - today.weekday())
+    return [(start + timedelta(days=index)).strftime("%d.%m.%Y")
+            for index in range(max(1, min(7, count)))]
 
 
 THINK_BLOCK = re.compile(r"<think(?:ing)?>.*?(?:</think(?:ing)?>|\Z)", re.S | re.I)
