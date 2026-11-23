@@ -3618,7 +3618,14 @@ class AICore:
             if re.match(r"^(нет|no|отмена)\b", text.lower()):
                 self.pending = None
                 return AIReply("Отменил, ничего не записал.")
+            # Вместо «да»/«нет» пришла другая фраза: операция не выполняется
+            # и человеку сказано об этом прямо, а не молча.
+            tool = self.pending[0]
             self.pending = None
+            spec = self.registry.get(tool)
+            what = spec.description if spec is not None else tool
+            return AIReply(f"Отменил «{what}»: вместо «да» или «нет» пришла другая фраза. "
+                           "Ничего не изменено. Если задача нужна — повторите её.")
 
         # 1) операции, которые модели не отдаём (публикация, откат, профиль, журнал)
         safety = self.router._safety(text)

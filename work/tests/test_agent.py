@@ -954,6 +954,12 @@ ok("отказ ничего не меняет",
    not any(record.get("processed") for record in dm._data["media_ready"]),
    dm._data["media_ready"])
 core.handle("сожми фото до 1080")
+reply = core.handle("покажи план")
+ok("другая фраза отменяет и обработку фото",
+   "Отменил" in reply.text and core.pending is None
+   and not any(record.get("processed") for record in dm._data["media_ready"]),
+   (reply.text, dm._data["media_ready"]))
+core.handle("сожми фото до 1080")
 core.handle("да")
 ok("после «да» фото обработаны",
    all("compress" in (record.get("processed") or []) for record in dm._data["media_ready"]),
@@ -1172,5 +1178,26 @@ dm.save()
 reply = core.run_tool("delete_material", item_id="mat_1")
 ok("GUI-путь убирает материал без вопроса",
    not reply.needs_confirmation and not dm.get_other_files().get("Материалы"), reply.text)
+
+# --- другая фраза вместо «да/нет» — явная отмена, а не тихая ---
+dm, core, stub = seeded_plan()
+before_ids = [str(item["id"]) for item in dm.get_content_plan()]
+reply = core.handle("удали последний пост из плана")
+ok("удаление ждёт ответа",
+   reply.needs_confirmation and len(dm.get_content_plan()) == 3, reply.text)
+reply = core.handle("покажи план")
+ok("другая фраза отменяет удаление и говорит об этом",
+   "Отменил" in reply.text and "Ничего не изменено" in reply.text, reply.text)
+ok("в отмене названо, что именно отменено",
+   "удалить запись" in reply.text.lower(), reply.text)
+ok("новая фраза не выполнилась молча под шумок отмены",
+   "Позиции плана" not in reply.text, reply.text)
+ok("после отмены ничего не удалено",
+   [str(item["id"]) for item in dm.get_content_plan()] == before_ids,
+   dm.get_content_plan())
+ok("подтверждение больше не ждёт ответа", core.pending is None, core.pending)
+reply = core.handle("да")
+ok("позднее «да» уже ничего не выполняет",
+   len(dm.get_content_plan()) == 3, (len(dm.get_content_plan()), reply.text))
 
 print("AGENT_DONE")
