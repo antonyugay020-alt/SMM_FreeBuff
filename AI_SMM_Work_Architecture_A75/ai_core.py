@@ -1079,6 +1079,56 @@ class AITools:
 
         return self._mutate("content_plan", apply)
 
+    def adapt_post(self, plan_id: str = "", format: str = "") -> Dict[str, Any]:
+        """Версия позиции плана в другом формате: та же тема и дата, новый формат и ТЗ."""
+        target = PLAN_FORMATS.get(str(format or "").strip().lower(), "")
+        if not target:
+            return {"summary": "Не понял формат: скажите «сделай из поста рилс» "
+                               "или «подготовь сторис по посту».",
+                    "effect": {}, "undo": {}}
+        source = self.dm.get_content_plan_item(plan_id) if plan_id else None
+        if source is None:
+            return {"summary": "Такой позиции в плане нет — делать версию не из чего.",
+                    "effect": {}, "undo": {}}
+        topic = str(source.get("topic") or "").strip() or "Без темы"
+        date = str(source.get("date") or "").strip()
+        same = [item for item in self.dm.get_content_plan()
+                if str(item.get("topic") or "").strip().lower() == topic.lower()
+                and str(item.get("format") or "") == target
+                and str(item.get("date") or "").strip() == date]
+        if same:
+            return {"summary": f"Версия «{topic}» формата {target} уже есть в плане "
+                               f"({same[0].get('id')}) — менять нечего.",
+                    "effect": {}, "undo": {}}
+        before_plan = copy.deepcopy(self.dm.get_content_plan())
+        before_tasks = copy.deepcopy(self.dm.get_shooting_tasks())
+        before_events = copy.deepcopy(self.dm.get_calendar_events())
+        new_id = self.dm.add_content_plan_item({
+            "date": date,
+            "rubric": source.get("rubric") or "Полезное",
+            "topic": topic,
+            "format": target,
+            "status": "Черновик",
+            "responsible": source.get("responsible") or "SMM",
+            "strategy_link": source.get("strategy_link") or "",
+            "shooting_task_id": "",
+            "based_on": str(source.get("id") or ""),
+        })
+        task = self.dm.create_shooting_task_from_content_plan(new_id) or {}
+        summary = (f"Сделал из поста «{topic}» ({date or 'без даты'}) версию формата {target} "
+                   f"на ту же дату: позиция {new_id} в контент-плане.")
+        if task:
+            summary += f" ТЗ на съёмку — {task.get('id')}."
+        summary += " Текст под эту версию пока пустой: «напиши подписи» или впишите вручную."
+        return {"summary": summary,
+                "effect": {"plan_ids": [new_id],
+                           "task_ids": [task.get("id")] if task else [],
+                           "based_on": str(source.get("id") or ""), "format": target},
+                "undo": {"op": "restore_sections",
+                         "sections": {"content_plan": before_plan,
+                                      "shooting_tasks": before_tasks,
+                                      "calendar_events": before_events}}}
+
     def schedule_posts(self, plan_ids: Optional[List[str]] = None,
                        dates: Optional[List[str]] = None) -> Dict[str, Any]:
         plan_ids = plan_ids or []
@@ -2345,6 +2395,20 @@ class AIRouter:
             return RouteDecision("get_project_context", {"scope": "plan"}, "rules")
         if re.search(r"(сделай|собери|создай|разработай).{0,20}стратеги", low):
             return RouteDecision("create_strategy", {"brief": text}, "rules")
+        # «сделай из поста рилс», «подготовь сторис по посту» — версия выбранной
+        # позиции в другом формате, а не новый пост с нуля
+        adapt_format = _adapt_target(low)
+        if adapt_format and re.search(r"из\s+(?:[а-яё0-9-]+\s+){0,2}пост\w*"
+                                      r"|по\s+(?:[а-яё0-9-]+\s+){0,2}посту", low):
+            item_id, problem = self._plan_id_from_text(text)
+            if problem:
+                return RouteDecision("", {}, "rules", 0.4, problem)
+            if not item_id:
+                return RouteDecision("", {}, "rules", 0.4,
+                                     "В плане нет позиций — делать версию не из чего. "
+                                     "Сначала добавьте пост.")
+            return RouteDecision("adapt_post", {"plan_id": item_id, "format": adapt_format},
+                                 "rules")
         # «напиши 3 идеи для сторис» — позиции плана формата Stories, а не посты
         if re.search(r"(?:идеи|идея|сюжет\w*|сценар\w*|кадр\w*).{0,25}сторис"
                      r"|сторис\w*.{0,25}(?:идеи|идея|сюжет\w*|сценар\w*|кадр\w*)", low) \
@@ -3025,6 +3089,12 @@ def _writing_with_period(text: str) -> bool:
                 or re.search(r"\bна\s+(?:этой\s+|следующ\w+\s+)?недел|\bвыходн|\bна\s+месяц", low))
 
 
+def _adapt_target(text: str) -> str:
+    """Формат, в который просят переделать пост: Reels или Stories; иначе пустая строка."""
+    match = re.search(r"рилс|reels|сторис|stories", str(text or "").lower())
+    return PLAN_FORMATS.get(match.group(0), "") if match else ""
+
+
 def _relative_day(text: str) -> str:
     """«сегодня»/«завтра»/«послезавтра» → дата dd.mm.YYYY, иначе пустая строка."""
     low = str(text or "").lower()
@@ -3211,6 +3281,10 @@ class AICore:
                                          "period_days": int, "topics": list,
                                          "format": str},
                                         self.tools.create_content_plan))
+        self.registry.register(ToolSpec("adapt_post",
+                                        "сделать из позиции плана версию другого формата (Reels, Stories)",
+                                        {"plan_id": str, "format": str},
+                                        self.tools.adapt_post))
         self.registry.register(ToolSpec("schedule_posts", "расставить даты и события",
                                         {"plan_ids": list, "dates": list},
                                         self.tools.schedule_posts,

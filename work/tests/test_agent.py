@@ -705,6 +705,76 @@ ok("создано три позиции формата Stories",
 ok("«идеи для сторис» — ответ о позициях плана",
    "контент-плана" in reply.text, reply.text)
 
+# --- «сделай из поста рилс» и «подготовь сторис по посту» ---
+dm, core, stub = seeded_plan()
+source = dm.get_content_plan()[-1]
+source_id = str(source["id"])
+decision = core.router._rules("сделай из поста рилс")
+ok("«сделай из поста рилс» — версия поста, а не новый пост с нуля",
+   decision is not None and decision.tool == "adapt_post"
+   and decision.args.get("plan_id") == source_id
+   and decision.args.get("format") == "Reels", getattr(decision, "args", None))
+reply = core.handle("сделай из поста рилс")
+items = dm.get_content_plan()
+made = items[-1]
+ok("Reels-версия на ту же дату и с той же темой",
+   len(items) == 4 and made.get("format") == "Reels"
+   and made.get("topic") == source.get("topic") and made.get("date") == source.get("date"),
+   [(item.get("date"), item.get("topic"), item.get("format")) for item in items])
+ok("у Reels-версии есть ТЗ и ссылка на исходный пост",
+   bool(made.get("shooting_task_id")) and made.get("based_on") == source_id
+   and any(task.get("content_plan_link") == str(made["id"]) for task in dm.get_shooting_tasks()),
+   (made.get("shooting_task_id"), made.get("based_on"), dm.get_shooting_tasks()))
+ok("исходный пост не переписан",
+   dm.get_content_plan_item(source_id).get("format") == "Пост"
+   and not dm.get_content_plan_item(source_id).get("shooting_task_id"),
+   dm.get_content_plan_item(source_id))
+ok("ответ называет исходный пост, формат и ТЗ",
+   "Reels" in reply.text and str(source.get("topic")) in reply.text and "ТЗ" in reply.text,
+   reply.text)
+ok("«сделай из поста рилс» не дёргает модель", not stub.calls, stub.calls)
+ok("версия попала в журнал и откатывается",
+   any(entry["tool"] == "adapt_post" for entry in core.journal.list(10)),
+   [entry["tool"] for entry in core.journal.list(10)])
+core.undo(reply.actions[0]["id"])
+ok("откат убирает версию и её ТЗ",
+   len(dm.get_content_plan()) == 3 and not dm.get_shooting_tasks(),
+   (len(dm.get_content_plan()), dm.get_shooting_tasks()))
+
+dm, core, stub = seeded_plan()
+source = dm.get_content_plan()[1]
+decision = core.router._rules("сделай из второго поста рилс")
+ok("номер выбирает исходный пост, а не последний",
+   decision is not None and decision.args.get("plan_id") == str(source["id"]),
+   getattr(decision, "args", None))
+
+dm, core, stub = seeded_plan()
+source = dm.get_content_plan()[-1]
+decision = core.router._rules("подготовь сторис по посту")
+ok("«подготовь сторис по посту» — Stories из поста",
+   decision is not None and decision.tool == "adapt_post"
+   and decision.args.get("plan_id") == str(source["id"])
+   and decision.args.get("format") == "Stories", getattr(decision, "args", None))
+reply = core.handle("подготовь сторис по посту")
+made = dm.get_content_plan()[-1]
+ok("сторис-версия: формат Stories, та же тема и дата",
+   len(dm.get_content_plan()) == 4 and made.get("format") == "Stories"
+   and made.get("topic") == source.get("topic") and made.get("date") == source.get("date"),
+   [(item.get("date"), item.get("topic"), item.get("format")) for item in dm.get_content_plan()])
+ok("в ответе про сторис сказано, что текст пустой",
+   "Stories" in reply.text and "пустой" in reply.text, reply.text)
+again = core.handle("подготовь сторис по посту")
+ok("повтор фразы не создаёт второй дубль",
+   len(dm.get_content_plan()) == 4 and "уже есть" in again.text,
+   (len(dm.get_content_plan()), again.text))
+ok("«подготовь сторис по посту» не дёргает модель", not stub.calls, stub.calls)
+
+dm, core, stub = build([])
+decision = core.router._rules("подготовь сторис по посту")
+ok("без постов — вопрос, а не выдумка",
+   decision is not None and not decision.tool and "пост" in (decision.clarify or "").lower(),
+   getattr(decision, "clarify", None))
+
 # --- будущих позиций нет: двигаем последнюю, а не молчим ---
 dm, core, stub = build([])
 dm.add_content_plan_item({"topic": "Старый", "rubric": "Польза", "format": "Пост",
