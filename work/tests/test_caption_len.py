@@ -65,7 +65,7 @@ dm6.save_brand_profile({"client_name": "Пар", "niche": "кофейня", "ton
 stub6 = StubProvider([json.dumps({"topics": [{"topic": "Три сорта утреннего фильтра", "rubric": "Польза", "format": "Пост"}]}, ensure_ascii=False)])
 core6 = AICore(dm6, {"monthly_budget_usd": 0}, providers=(stub6, None))
 core6.handle("создай контент-план на 1 пост")
-sysprompt = stub6.calls[0][0]
+sysprompt = next((system for system, _ in stub6.calls if '"topics"' in system), "")
 print("6 темы:", [i["topic"] for i in dm6.get_content_plan()])
 if "про гостя и его выгоду" not in sysprompt: fails.append("в промпте тем нет требования про выгоду гостя")
 if "обжаривает кофе дома" not in sysprompt: fails.append("в промпте тем нет запрета на домашнюю обжарку")

@@ -45,7 +45,7 @@ for t in topics:
 if "Попробуйте" in topics[0] or topics[0].split()[-1].lower() == "и": fails.append("императив/висячий союз остались в теме")
 
 # 2. в промпте тем есть требования
-sysprompt = stub.calls[0][0]
+sysprompt = next((system for system, _ in stub.calls if '"topics"' in system), "")
 print("2 промпт тем ok:", "до 60" in sysprompt, "без императива" in sysprompt, "без точки" in sysprompt)
 for needle in ("до 60", "без императива", "без точки"):
     if needle not in sysprompt: fails.append(f"в промпте тем нет «{needle}»")

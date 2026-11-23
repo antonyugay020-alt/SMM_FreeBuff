@@ -59,7 +59,7 @@ sections = dm.get_strategy().get("sections") or []
 print(f"     блоков стратегии: {len(sections)}")
 if len(sections) != 5:
     breaks.append(f"стратегия: ожидалось 5 блоков, получено {len(sections)}")
-prompt = local.calls[0][1] if local.calls else ""
+prompt = next((user for system, user in local.calls if '"sections"' in system), "")
 if "Кофейня" not in prompt:
     breaks.append("стратегия: бренд-профиль не попал в запрос к модели")
 

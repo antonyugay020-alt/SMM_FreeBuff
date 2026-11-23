@@ -94,10 +94,11 @@ if plan:
     check("есть подписи у постов", captions > 0, f"{captions} из {len(plan)}")
     check("есть ТЗ у постов", tasks > 0, f"{tasks} из {len(plan)}")
 
-# --- 2. проверка плана правилом, без модели ---
+# --- 2. проверка плана: модель выбирает validate_plan сама ---
 print('\n2. «проверь план»')
 reply2, took2, tools2 = run_task("проверь план")
-check("проверка плана ответила", "роверка" in reply2.text, reply2.text[:160])
+check("проверка плана выполнена",
+      "validate_plan" in tools2 or "ровер" in reply2.text, reply2.text[:160])
 
 # --- 3. ещё одна свободная формулировка ---
 print('\n3. «нужно 5 постов для инстаграма»')

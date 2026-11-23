@@ -36,10 +36,17 @@ TOPICS = [{"topic": "Свежая обжарка каждое утро", "rubric
 
 def answer(system, user):
     if "AI SMM Manager" in system:
+        # только сама задача: в промпте есть ещё диалог и история шагов
+        task = user.split("Задача пользователя:", 1)[-1].splitlines()[0].strip().lower()
         done = (user.split("Уже сделано:")[-1]
                 .split("Доступные инструменты:")[0].lower())
+        if "проверь" in task:
+            if "validate_plan" not in done:
+                return json.dumps({"tool": "validate_plan", "args": {}}, ensure_ascii=False)
+            return json.dumps({"action": "done", "say": "Проверка: план в порядке."},
+                              ensure_ascii=False)
         if "create_content_plan" not in done:
-            count = 5 if "5 постов" in user else 3
+            count = 5 if "5 постов" in task else 3
             return json.dumps({"tool": "create_content_plan", "args": {"count": count}},
                               ensure_ascii=False)
         if "write_captions" not in done:

@@ -205,13 +205,19 @@ class CloudProvider:
 
 
 class StubProvider:
-    """Deterministic replies for tests and offline demos."""
+    """Deterministic replies for tests and offline demos.
+
+    По умолчанию заглушка не умеет вести агент: на запрос шага отвечает прозой,
+    агент уступает правилам — так же, как слабая модель. `agent=True` — заглушка
+    отвечает шагами из очереди.
+    """
 
     name = "stub"
 
-    def __init__(self, replies: Optional[List[str]] = None):
+    def __init__(self, replies: Optional[List[str]] = None, agent: bool = False):
         self.replies = list(replies or [])
         self.calls: List[Tuple[str, str]] = []
+        self.agent = agent
 
     def available(self) -> bool:
         return True
@@ -219,6 +225,9 @@ class StubProvider:
     def chat(self, system: str, user: str, temperature: float = 0.2,
              max_tokens: int = 2048) -> LLMResult:
         self.calls.append((system, user))
+        if "AI SMM Manager" in system and not self.agent:
+            return LLMResult(text="шаги не веду", provider=self.name, model="stub",
+                             tokens_in=len(user) // 4, tokens_out=3)
         text = self.replies.pop(0) if self.replies else "{}"
         return LLMResult(text=text, provider=self.name, model="stub",
                          tokens_in=len(user) // 4, tokens_out=len(text) // 4)
@@ -2247,7 +2256,9 @@ class AIAgent:
         unknown: List[str] = []
         for step in range(AGENT_STEPS):
             done_text = "\n".join(f"{number}. {line}" for number, line in enumerate(history, 1))
+            dialog = "\n".join(getattr(self.core, "dialog", [])[-8:])
             prompt = (f"Задача пользователя: {task}\n\n"
+                      f"Предыдущий диалог:\n{dialog or 'пусто'}\n\n"
                       f"Состояние проекта: {self.project_state()}\n\n"
                       f"Уже сделано:\n{done_text or 'ничего'}\n\n"
                       f"Доступные инструменты:\n{catalog}\n\n"
@@ -2286,7 +2297,7 @@ class AIAgent:
                     return AIReply(self._finish_after_plan(gaps, actions, first_say),
                                    "agent", actions)
                 return AIReply(say or ("Готово." if kind == "done" else "Уточни задачу."),
-                               "agent", actions)
+                               "agent", actions, asked=(kind == "ask"))
             tool = str(action.get("tool") or "").strip()
             if not tool:
                 history.append("в шаге нет имени инструмента — нужен JSON с полем tool")
@@ -2782,6 +2793,24 @@ class AIRouter:
             cleaned[arg_name] = value
         return RouteDecision(decision.tool, cleaned, decision.layer, decision.confidence)
 
+    def _safety(self, text: str) -> Optional[RouteDecision]:
+        """Операции, которые модели не отдаём: откат, журнал, профиль, публикация, выкладка."""
+        low = str(text or "").lower()
+        if re.search(r"отмени последн|откати последн|undo", low):
+            return RouteDecision("undo_last", {}, "rules")
+        if re.search(r"журнал|история действий|что ты сделал", low):
+            return RouteDecision("show_journal", {}, "rules")
+        if re.search(r"бренд.?профил|профил[ья] бренда|заполни профиль", low):
+            return self._rules(text)
+        if re.search(r"проверь.{0,20}(доступ|инстаграм|instagram)|доступ к инстаграм", low):
+            return RouteDecision("instagram_status", {}, "rules")
+        if re.search(r"опублику\w*|запости\w*|publish", low):
+            return self._rules(text)
+        if re.search(r"(выложи|загрузи|запости|сделай).{0,25}(материал|медиа|файл)"
+                     r".{0,25}(url|ссылк|публичн)", low):
+            return self._rules(text)
+        return None
+
     # --- generation helpers ---
     def _generate(self, system: str, user: str, purpose: str) -> str:
         for provider in (self.local, self.cloud):
@@ -3275,6 +3304,7 @@ class AIReply:
     needs_confirmation: bool = False
     pending_tool: str = ""
     pending_args: Dict[str, Any] = field(default_factory=dict)
+    asked: bool = False
 
 
 class AICore:
@@ -3318,6 +3348,10 @@ class AICore:
 
         self.interview: Dict[str, Any] = {}
         self.pending: Optional[Tuple[str, Dict[str, Any]]] = None
+        # Диалог для модели: без него «сделай в том же духе» не о чем.
+        self.dialog: List[str] = []
+        # Задача, по которой агент задал вопрос: ответ продолжает её, а не начинает заново.
+        self.open_task: str = ""
 
     # --- setup ---
     def _register_tools(self) -> None:
@@ -3444,15 +3478,38 @@ class AICore:
                 return AIReply("Отменил, ничего не записал.")
             self.pending = None
 
-        rules = self.router._rules(text)
-        if rules is not None and (rules.tool or rules.clarify):
-            decision = rules
-        else:
-            agent_reply = self._agent().run(text)
-            if agent_reply is not None:
-                return agent_reply
-            decision = self.router.route(text)
+        # 1) операции, которые модели не отдаём (публикация, откат, профиль, журнал)
+        safety = self.router._safety(text)
+        if safety is not None and (safety.tool or safety.clarify):
+            reply = self._run_decision(safety)
+            self._remember(text, reply.text)
+            return reply
 
+        # 2) задача целиком уходит агенту: модель сама решает, что это за действие
+        task = text
+        if self.open_task:
+            task = f"{self.open_task}\nУточнение от пользователя: {text}"
+            self.open_task = ""
+        agent_reply = self._agent().run(task)
+        if agent_reply is not None:
+            self._remember(text, agent_reply.text)
+            if agent_reply.asked:
+                self.open_task = task
+            return agent_reply
+
+        # 3) без модели — прежние правила: приложение остаётся рабочим офлайн
+        reply = self._run_decision(self.router.route(text))
+        self._remember(text, reply.text)
+        return reply
+
+    def _remember(self, user: str, answer: str) -> None:
+        """Пара реплик в контекст модели: шесть последних пар, без бесконечного роста."""
+        self.dialog.append(f"Пользователь: {(user or '').strip()[:300]}")
+        self.dialog.append(f"Менеджер: {(answer or '').strip()[:300]}")
+        del self.dialog[:-12]
+
+    def _run_decision(self, decision: RouteDecision) -> AIReply:
+        """Детерминированное выполнение решения правила или маршрутизатора."""
         if decision.tool == "undo_last":
             return self._undo_last()
         if decision.tool == "show_journal":

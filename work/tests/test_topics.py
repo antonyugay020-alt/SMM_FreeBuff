@@ -35,7 +35,7 @@ if [i["topic"] for i in plan] != [t["topic"] for t in TOPICS["topics"]]:
     fails.append("темы от модели не попали в план")
 if plan[1]["format"] != "Reels":
     fails.append("формат Reels не сохранился")
-prompt = stub.calls[0][1]
+prompt = next((user for system, user in stub.calls if '"topics"' in system), "")
 if "Кофейня" not in prompt and "Пар" not in prompt:
     fails.append("бренд-профиль не попал в запрос тем")
 

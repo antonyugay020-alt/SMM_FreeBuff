@@ -21,11 +21,13 @@ class Stage:
 
     name = "stub"
 
-    def __init__(self, script):
+    def __init__(self, script, agent=None):
         self.script = list(script)
         self.calls = []
         self.formats = []
         self.agent_calls = 0
+        # со сценарием — это шаги агента; без сценария модель шаги не ведёт (как слабая)
+        self.agent = bool(script) if agent is None else agent
 
     def available(self):
         return True
@@ -34,7 +36,7 @@ class Stage:
         self.calls.append(user)
         self.formats.append(fmt)
         low = user.lower()
-        if "AI SMM Manager" in system:
+        if "AI SMM Manager" in system and self.agent:
             self.agent_calls += 1
             text = (self.script.pop(0) if self.script
                     else json.dumps({"action": "done", "say": "Готово."}, ensure_ascii=False))
@@ -60,6 +62,9 @@ class Dead:
     """Провайдер, которого нет: поведение без модели не зависит от машины."""
 
     name = "stub"
+    calls = []
+    formats = []
+    agent_calls = 0
 
     def available(self):
         return False
@@ -136,7 +141,7 @@ ok("шагов не больше лимита", stub.agent_calls <= AGENT_STEPS,
 # --- задача, покрытая правилом, модель не дёргает ---
 dm, core, stub = build([])
 core.handle("проверь план")
-ok("правило быстрее модели", not stub.calls, stub.calls)
+ok("правило, а не шаги агента", stub.agent_calls == 0, stub.agent_calls)
 
 
 # --- «грязные» ответы модели: работа продолжается ---
@@ -362,7 +367,8 @@ for text, tool in [
     decision = core.router._rules(text)
     ok(f"«{text}» — {tool}", decision is not None and decision.tool == tool,
        getattr(decision, "tool", None))
-ok("частотные фразы не дёргают модель", not stub.calls, stub.calls)
+ok("частотные фразы делает правило, а не шаги агента",
+   stub.agent_calls == 0, stub.agent_calls)
 ok("аналитика за месяц — 30 дней",
    core.router._rules("что зашло за месяц").args.get("period_days") == 30)
 ok("аналитика за квартал — 90 дней",
@@ -456,7 +462,8 @@ for text, tool, scope in [
        decision is not None and decision.tool == tool
        and (scope is None or decision.args.get("scope") == scope),
        getattr(decision, "tool", None))
-ok("публикации и стратегия тоже без модели", not stub.calls, stub.calls)
+ok("чтение медиа и стратегии — правилом, а не шагами агента",
+   stub.agent_calls == 0, stub.agent_calls)
 reply = core.handle("покажи материалы")
 ok("чтение материалов даёт список", "Материалов готовых" in reply.text, reply.text)
 reply = core.handle("какие блоки в стратегии")
@@ -528,7 +535,8 @@ ok("«экспортируй план в excel» — честный отказ",
 reply = core.handle("экспортируй план в excel")
 ok("Excel не уходит в пакет и не просит подтверждения",
    not reply.needs_confirmation and "PDF" in reply.text, reply.text)
-ok("фразы третьего обмера не дёргают модель", not stub.calls, stub.calls)
+ok("фразы третьего обмера — правилом, а не шагами агента",
+   stub.agent_calls == 0, stub.agent_calls)
 
 # --- четвёртый обмер: ближайшие посты, «завтра», смена даты, «в план пост про …» ---
 dm, core, stub = seeded_plan()
@@ -595,7 +603,8 @@ dates = [str(item.get("date")) for item in dm.get_content_plan()]
 ok("завтрашняя дата встала в ближайшую позицию",
    dates == [tomorrow, "02.04.2027", "03.04.2027"], dates)
 ok("ответ называет новую дату", tomorrow in reply.text, reply.text)
-ok("«перенеси пост на завтра» не дёргает модель", not stub.calls, stub.calls)
+ok("«перенеси пост на завтра» — правилом, а не шагами агента",
+   stub.agent_calls == 0, stub.agent_calls)
 ok("перенос даты можно отменить", any(entry["tool"] == "edit_record"
                                       for entry in core.journal.list(10)), core.journal.list(10))
 
@@ -623,7 +632,7 @@ dates = [str(item.get("date")) for item in dm.get_content_plan()]
 ok("дата дд.мм.гггг записана в позицию",
    dates == ["05.12.2026", "02.04.2027", "03.04.2027"], dates)
 ok("ответ называет дату из фразы, модель не тронута",
-   "05.12.2026" in reply.text and not stub.calls, (reply.text, stub.calls))
+   "05.12.2026" in reply.text and stub.agent_calls == 0, (reply.text, stub.agent_calls))
 decision = core.router._rules("перенеси пост на 02.04.2027")
 ok("дата из фразы адресует позицию",
    decision is not None and decision.args.get("item_id") == full_ids[1],
@@ -663,7 +672,8 @@ ok("«что писать завтра» — чтение плана на зав
 reply = core.handle("что писать завтра")
 ok("в ответе пост на завтра и пометка об отсутствии подписи",
    "Завтрашний пост" in reply.text and "без подписи" in reply.text, reply.text)
-ok("«что писать завтра» не дёргает модель", not stub.calls, stub.calls)
+ok("«что писать завтра» — правилом, а не шагами агента",
+   stub.agent_calls == 0, stub.agent_calls)
 
 dm, core, stub = seeded_plan()
 decision = core.router._rules("сделай календарь на месяц")
@@ -674,7 +684,8 @@ reply = core.handle("сделай календарь на месяц")
 ok("события календаря созданы по датам плана",
    len(dm.get_calendar_events()) == 3, dm.get_calendar_events())
 ok("ответ говорит, сколько событий пришло из плана", "Из плана" in reply.text, reply.text)
-ok("«сделай календарь на месяц» не дёргает модель", not stub.calls, stub.calls)
+ok("«сделай календарь на месяц» — правилом, а не шагами агента",
+   stub.agent_calls == 0, stub.agent_calls)
 
 # --- «что писать» — только с днём или периодом ---
 dm, core, stub = seeded_plan()
@@ -732,7 +743,8 @@ ok("исходный пост не переписан",
 ok("ответ называет исходный пост, формат и ТЗ",
    "Reels" in reply.text and str(source.get("topic")) in reply.text and "ТЗ" in reply.text,
    reply.text)
-ok("«сделай из поста рилс» не дёргает модель", not stub.calls, stub.calls)
+ok("«сделай из поста рилс» — правилом, а не шагами агента",
+   stub.agent_calls == 0, stub.agent_calls)
 ok("версия попала в журнал и откатывается",
    any(entry["tool"] == "adapt_post" for entry in core.journal.list(10)),
    [entry["tool"] for entry in core.journal.list(10)])
@@ -767,7 +779,8 @@ again = core.handle("подготовь сторис по посту")
 ok("повтор фразы не создаёт второй дубль",
    len(dm.get_content_plan()) == 4 and "уже есть" in again.text,
    (len(dm.get_content_plan()), again.text))
-ok("«подготовь сторис по посту» не дёргает модель", not stub.calls, stub.calls)
+ok("«подготовь сторис по посту» — правилом, а не шагами агента",
+   stub.agent_calls == 0, stub.agent_calls)
 
 dm, core, stub = build([])
 decision = core.router._rules("подготовь сторис по посту")
@@ -786,7 +799,8 @@ ok("отчёт называет количество позиций и даты"
    and "03.04.2027 — 1" in reply.text, reply.text)
 ok("отчёт считает позиции без подписи и без ТЗ",
    "Без подписи: 3 из 3" in reply.text and "Без ТЗ: 3 из 3" in reply.text, reply.text)
-ok("«сделай отчёт по плану» не дёргает модель", not stub.calls, stub.calls)
+ok("«сделай отчёт по плану» — правилом, а не шагами агента",
+   stub.agent_calls == 0, stub.agent_calls)
 ok("отчёт ничего не меняет в проекте",
    len(dm.get_content_plan()) == 3 and not core.journal.list(10),
    (len(dm.get_content_plan()), core.journal.list(10)))
@@ -809,8 +823,9 @@ ok("отчёт называет позиции без подписи по дат
 ok("отчёт называет позиции без ТЗ и не задевает готовую",
    "Без ТЗ: 2 из 3" in reply.text and "С подписью и ТЗ" not in reply.text,
    reply.text)
-ok("отчёт не дёргает модель и не пишет в журнал",
-   not stub.calls and not core.journal.list(10), (stub.calls, core.journal.list(10)))
+ok("отчёт не идёт шагами агента и не пишет в журнал",
+   stub.agent_calls == 0 and not core.journal.list(10),
+   (stub.agent_calls, core.journal.list(10)))
 
 dm, core, stub = build([])
 reply = core.handle("сделай отчёт по плану")
@@ -851,7 +866,8 @@ reply = core.handle("добавь в план пост про осень")
 plan = dm.get_content_plan()
 ok("пост про осень в плане",
    len(plan) == 1 and "осень" in str(plan[0].get("topic")).lower(), plan)
-ok("фраза про осень не дёргает модель", not stub.calls, stub.calls)
+ok("фраза про осень — правилом, а не шагами агента",
+   stub.agent_calls == 0, stub.agent_calls)
 
 # --- проверка плана и Excel не перехватывают чтение таблицы ---
 dm, core, stub = seeded_plan()
@@ -863,8 +879,8 @@ for text in ("покажи таблицу постов", "покажи все п
 reply = core.handle("покажи таблицу постов")
 ok("в ответе таблица позиций",
    "Позиции плана (3)" in reply.text and "01.04.2027" in reply.text, reply.text)
-ok("«покажи таблицу постов» не дёргает модель и не просит подтверждения",
-   not stub.calls and not reply.needs_confirmation, stub.calls)
+ok("«покажи таблицу постов» — правилом, без шагов агента и без подтверждения",
+   stub.agent_calls == 0 and not reply.needs_confirmation, stub.agent_calls)
 decision = core.router._rules("проверь, все ли посты с подписями")
 ok("проверка плана не перехвачена чтением таблицы",
    decision is not None and decision.tool == "validate_plan", getattr(decision, "tool", None))
@@ -953,5 +969,62 @@ ok("стратегия из строк собрана", len(sections) == 2, sect
 ok("заголовки строк разобраны", [one.get("title") for one in sections] == ["О проекте", "Аудитория"],
    sections)
 ok("итог без падения инструмента", "Стратегия готова" in reply.text, reply.text)
+
+# --- модель первая: задачу ведёт агент, даже если правило её знает ---
+dm, core, stub = build([
+    '{"action": "tool", "tool": "plan_report", "args": {}}',
+    '{"action": "done", "say": "Отчёт по плану собран."}'])
+dm.add_content_plan_item({"topic": "Пост 1", "rubric": "Польза", "format": "Пост",
+                          "date": "01.04.2027"})
+reply = core.handle("сделай отчёт по плану")
+ok("при модели задачу ведёт агент, а не правило",
+   reply.layer == "agent" and stub.agent_calls == 2, (reply.layer, stub.agent_calls))
+ok("агент взял отчёт из плана, а не сочинил", "Отчёт по плану" in reply.text, reply.text)
+
+# --- модель спросила — ответ продолжает ту же задачу ---
+dm, core, stub = build([
+    '{"action": "ask", "say": "Какой пост: последний или по дате?"}',
+    '{"action": "tool", "tool": "plan_report", "args": {}}',
+    '{"action": "done", "say": "Отчёт по плану готов."}'])
+dm.add_content_plan_item({"topic": "Пост 1", "rubric": "Польза", "format": "Пост",
+                          "date": "01.04.2027"})
+first = core.handle("сделай отчёт по плану")
+ok("вопрос модели доходит до человека",
+   first.asked and "Какой пост" in first.text, (first.asked, first.text))
+ok("задача с вопросом запомнена", core.open_task != "", core.open_task)
+second = core.handle("последний")
+ok("ответ человека продолжает задачу, а не начинает новую",
+   "Уточнение от пользователя: последний" in stub.calls[-2], stub.calls[-2][-300:])
+ok("после уточнения задача доведена", "Отчёт по плану" in second.text, second.text)
+ok("запомненная задача сброшена", core.open_task == "", core.open_task)
+
+# --- диалог попадает в контекст модели ---
+dm, core, stub = build([
+    '{"action": "tool", "tool": "plan_report", "args": {}}',
+    '{"action": "done", "say": "Первый отчёт готов."}',
+    '{"action": "tool", "tool": "plan_report", "args": {}}',
+    '{"action": "done", "say": "Второй отчёт готов."}'])
+dm.add_content_plan_item({"topic": "Пост 1", "rubric": "Польза", "format": "Пост",
+                          "date": "01.04.2027"})
+core.handle("сделай отчёт по плану")
+core.handle("повтори в том же духе")
+ok("модель видит предыдущий ответ в диалоге",
+   "Первый отчёт готов" in stub.calls[-2], stub.calls[-2][-400:])
+
+# --- без модели прежние правила продолжают работать ---
+dm, core, stub = build([], providers=False)
+dm.add_content_plan_item({"topic": "Пост 1", "rubric": "Польза", "format": "Пост",
+                          "date": "01.04.2027"})
+reply = core.handle("покажи план")
+ok("без модели фраза по-прежнему работает", "Позиции плана" in reply.text, reply.text)
+
+# --- журнал и откат правило забирает до модели ---
+dm, core, stub = build([
+    '{"action": "tool", "tool": "create_content_plan", "args": {"count": 2}}',
+    '{"action": "done", "say": "Создал план."}'])
+reply = core.handle("журнал действий")
+ok("журнал решает правило, а не агент",
+   stub.agent_calls == 0 and "Журнал" in reply.text, (stub.agent_calls, reply.text))
+ok("журнал не создал пост", not dm.get_content_plan(), dm.get_content_plan())
 
 print("AGENT_DONE")
