@@ -558,8 +558,8 @@ ok("в ответе только завтрашний пост",
 
 dm, core, stub = seeded_plan()
 plan_ids = [str(item["id"]) for item in dm.get_content_plan()]
-dm._data["calendar_events"] = [{"id": "ev_3", "date": "03.04.2027",
-                                "title": "Пост 3", "link": plan_ids[-1]}]
+dm._data["calendar_events"] = [{"id": "ev_1", "date": "01.04.2027",
+                                "title": "Пост 1", "link": plan_ids[0]}]
 dm.save()
 decision = core.router._rules("измени дату поста на 5 декабря")
 ok("«измени дату поста на 5 декабря» — edit_record по плану",
@@ -568,10 +568,12 @@ ok("«измени дату поста на 5 декабря» — edit_record �
    and str(decision.args.get("fields", {}).get("date") or "").startswith("05.12."),
    getattr(decision, "args", None))
 new_date = str((decision.args or {}).get("fields", {}).get("date") or "")
+ok("без номера берётся ближайшая будущая позиция, а не последняя",
+   decision.args.get("item_id") == plan_ids[0], getattr(decision, "args", None))
 reply = core.handle("измени дату поста на 5 декабря")
 dates = [str(item.get("date")) for item in dm.get_content_plan()]
 ok("дата изменена у одной позиции, остальные не тронуты",
-   dates[:2] == ["01.04.2027", "02.04.2027"] and dates[2] == new_date, dates)
+   dates == [new_date, "02.04.2027", "03.04.2027"], dates)
 ok("ответ называет новую дату", new_date in reply.text, reply.text)
 ok("событие календаря переехало вместе с датой",
    str(dm.get_calendar_events()[0].get("date")) == new_date, dm.get_calendar_events())
@@ -580,9 +582,50 @@ ok("порядковый номер работает и при смене дат
    decision is not None and decision.args.get("item_id") == plan_ids[1],
    getattr(decision, "args", None))
 decision = core.router._rules("перенеси пост на завтра")
-ok("действие «перенеси» не превращается в чтение ближайших",
-   decision is None or decision.tool != "get_project_context",
+ok("«перенеси пост на завтра» — смена даты, а не чтение ближайших",
+   decision is not None and decision.tool == "edit_record"
+   and decision.args.get("fields", {}).get("date") == tomorrow,
    getattr(decision, "tool", None))
+
+# --- «перенеси пост на завтра» реально двигает ближайшую позицию ---
+dm, core, stub = seeded_plan()
+move_ids = [str(item["id"]) for item in dm.get_content_plan()]
+reply = core.handle("перенеси пост на завтра")
+dates = [str(item.get("date")) for item in dm.get_content_plan()]
+ok("завтрашняя дата встала в ближайшую позицию",
+   dates == [tomorrow, "02.04.2027", "03.04.2027"], dates)
+ok("ответ называет новую дату", tomorrow in reply.text, reply.text)
+ok("«перенеси пост на завтра» не дёргает модель", not stub.calls, stub.calls)
+ok("перенос даты можно отменить", any(entry["tool"] == "edit_record"
+                                      for entry in core.journal.list(10)), core.journal.list(10))
+
+# --- номер важнее порядка: явная дата и номер адресуют свою позицию ---
+dm, core, stub = seeded_plan()
+order_ids = [str(item["id"]) for item in dm.get_content_plan()]
+decision = core.router._rules("перенеси третий пост на завтра")
+ok("номер сильнее «ближайшей» при переносе",
+   decision is not None and decision.args.get("item_id") == order_ids[2],
+   getattr(decision, "args", None))
+
+# --- будущих позиций нет: двигаем последнюю, а не молчим ---
+dm, core, stub = build([])
+dm.add_content_plan_item({"topic": "Старый", "rubric": "Польза", "format": "Пост",
+                          "date": "01.01.2020"})
+dm.add_content_plan_item({"topic": "Свежий", "rubric": "Польза", "format": "Пост",
+                          "date": "01.02.2020"})
+past_ids = [str(item["id"]) for item in dm.get_content_plan()]
+decision = core.router._rules("измени дату поста на 5 декабря")
+ok("будущих позиций нет — берётся последняя",
+   decision is not None and decision.args.get("item_id") == past_ids[-1],
+   getattr(decision, "args", None))
+vague = core.router._rules("перенеси пост на утро")
+ok("перенос без понятной даты — вопрос, а не догадка",
+   vague is not None and not vague.tool and "дату" in (vague.clarify or ""),
+   getattr(vague, "clarify", None))
+fresh = core.router._rules("поставь пост про осень")
+ok("«поставь пост про осень» по-прежнему создаёт пост, а не переносит",
+   fresh is not None and fresh.tool == "create_content_plan",
+   getattr(fresh, "tool", None))
 
 dm, core, stub = build([])
 decision = core.router._rules("добавь в план пост про осень")

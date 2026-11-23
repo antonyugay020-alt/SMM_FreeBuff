@@ -2398,16 +2398,21 @@ class AIRouter:
                                      "В плане нет позиций — ставить в календарь нечего.")
             return RouteDecision("schedule_posts",
                                  {"plan_ids": ids, "dates": _week_dates(len(ids))}, "rules")
-        # «измени дату поста на 5 декабря» — смена даты одной позиции, а не недельная расстановка
-        if (re.search(r"(?:измени|поменяй|смени|перенеси|переставь|сдвинь|поставь)\w*"
-                      r".{0,30}дат\w*", low)
-                and re.search(r"пост|позици|публикац|план", low)):
+        # «измени дату поста на 5 декабря», «перенеси пост на завтра» — смена даты одной
+        # позиции, а не недельная расстановка; без номера двигаем ближайшую будущую
+        change_date = re.search(r"(?:измени|поменяй|смени|перенеси|переставь|сдвинь|поставь)\w*"
+                                r".{0,30}дат\w*", low)
+        move_post = re.search(r"(?:перенеси|переставь|сдвинь|передвинь|поменяй|измени|смени)\w*\s+"
+                              r"(?:[а-яё0-9-]+\s+){0,3}(?:пост|позици\w*|публикац\w*)\s+"
+                              r"(?:на|во)\s+\S+", low)
+        if (change_date or move_post) and re.search(r"пост|позици|публикац|план", low) \
+                and not re.search(r"\bвсе\b|\bвсё\b", low):
             when = _date_from_words(low) or _relative_day(low)
             if not when:
                 return RouteDecision("", {}, "rules", 0.4,
                                      "На какую дату перенести? Скажите так: "
                                      "«измени дату поста на 5 декабря».")
-            item_id, problem = self._plan_id_from_text(text)
+            item_id, problem = self._plan_id_from_text(text, default_nearest=True)
             if problem:
                 return RouteDecision("", {}, "rules", 0.4, problem)
             if not item_id:
@@ -2727,8 +2732,12 @@ class AIRouter:
         items = self.dm_plan()
         return items[-1]["id"] if items else ""
 
-    def _plan_id_from_text(self, text: str) -> Tuple[str, str]:
-        """Позиция плана из фразы: по дате, по номеру (с 1) или последняя. Возвращает id и текст отказа."""
+    def _plan_id_from_text(self, text: str, default_nearest: bool = False) -> Tuple[str, str]:
+        """Позиция плана из фразы: по дате, по номеру (с 1) или по умолчанию.
+
+        default_nearest — без номера и даты брать ближайшую будущую позицию, а не последнюю.
+        Возвращает id и текст отказа.
+        """
         items = self.dm_plan()
         if not items:
             return "", ""
@@ -2749,7 +2758,25 @@ class AIRouter:
             if 1 <= number <= len(items):
                 return str(items[number - 1].get("id") or ""), ""
             return "", f"В плане {len(items)} позиций — номера {number} нет."
-        return self._latest_plan_id(), ""
+        return (self._nearest_plan_id() if default_nearest else self._latest_plan_id()), ""
+
+    def _nearest_plan_id(self) -> str:
+        """Ближайшая будущая позиция плана по дате; если будущих нет — последняя."""
+        items = self.dm_plan()
+        if not items:
+            return ""
+        today = datetime.now().date()
+        nearest, nearest_date = "", None
+        for item in items:
+            try:
+                when = datetime.strptime(str(item.get("date") or "").strip(), "%d.%m.%Y").date()
+            except ValueError:
+                continue
+            if when < today:
+                continue
+            if nearest_date is None or when < nearest_date:
+                nearest, nearest_date = str(item.get("id") or ""), when
+        return nearest or self._latest_plan_id()
 
     SECTION_LABELS = {"content_plan": "плане", "calendar_events": "календаре",
                       "shooting_tasks": "ТЗ", "post_metrics": "метриках"}
