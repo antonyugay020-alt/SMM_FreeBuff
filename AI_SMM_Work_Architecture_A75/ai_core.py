@@ -956,6 +956,17 @@ class AITools:
                          "sections": {"content_plan": plan_before,
                                       "calendar_events": events_before}}}
 
+    def review_would_change(self, args: Dict[str, Any]) -> bool:
+        """Спрашиваем только когда есть что проверять и чем: иначе ответ без вопроса."""
+        plan = self.dm.get_content_plan()
+        plan_id = str(args.get("plan_id") or "")
+        targets = ([item for item in plan if str(item.get("id")) == plan_id] if plan_id
+                   else [item for item in plan if str(item.get("caption") or "").strip()])
+        if not any(str(item.get("caption") or "").strip() for item in targets):
+            return False
+        editor = getattr(self.router, "editor", None)
+        return bool(editor is not None and editor.available())
+
     def review_captions(self, plan_id: str = "") -> Dict[str, Any]:
         """Редактор проверяет подписи: одобренные помечаются, слабые переписываются с откатом."""
         plan = self.dm.get_content_plan()
@@ -3578,7 +3589,8 @@ class AICore:
         self.registry.register(ToolSpec("review_captions",
                                         "редактор по запросу: одна проверка всех подписей, "
                                         "слабые переписывает",
-                                        {"plan_id": str}, self.tools.review_captions))
+                                        {"plan_id": str}, self.tools.review_captions,
+                                        needs_confirmation=lambda a: self.tools.review_would_change(a)))
         self.registry.register(ToolSpec("import_media", "импорт файлов в проект",
                                         {"paths": list, "zone": str}, self.tools.import_media))
         self.registry.register(ToolSpec("batch_photo", "кадрирование, цвет, сжатие",
@@ -3796,6 +3808,18 @@ class AICore:
                 return (f"Убрать «{name}» из списка «{folder}»?" if name
                         else f"Убрать материал из списка «{folder}»?")
             return "Убрать материал из списка?"
+        if tool == "review_captions":
+            plan = self.dm.get_content_plan()
+            plan_id = str(args.get("plan_id") or "")
+            targets = ([item for item in plan if str(item.get("id")) == plan_id] if plan_id
+                       else [item for item in plan if str(item.get("caption") or "").strip()])
+            names = [str(item.get("topic") or item.get("id") or "").strip() for item in targets]
+            listed = ", ".join(f"«{name}»" for name in names if name)
+            if len(names) > 5:
+                listed += f" и ещё {len(names) - 5}"
+            scope = f"подписи ({len(names)} шт.: {listed})" if listed else "подписи"
+            return (f"Проверить {scope} редактором? Слабые подписи он перепишет — "
+                    "прежний текст заменится. Это один запрос к модели-редактору.")
         if tool == "edit_record":
             section = str(args.get("section") or "")
             place = self.CONFIRM_PLACES.get(section, "списка")

@@ -1182,7 +1182,23 @@ first_id = dm.add_content_plan_item({"topic": "Обжарка", "rubric": "По�
 second_id = dm.add_content_plan_item({"topic": "Отзыв", "rubric": "Личное", "format": "Пост",
                                       "date": "02.04.2027", "caption": "Готовая подпись."})
 reply = core.handle("проверь подписи редактором")
-ok("редактор проверяет все подписи одним вызовом", len(editor.calls) == 1, len(editor.calls))
+ok("проверка редактором сначала спрашивает «да/нет»", reply.needs_confirmation, reply.text)
+ok("в вопросе обе подписи и предупреждение о замене текста",
+   "«Обжарка»" in reply.text and "«Отзыв»" in reply.text and "заменится" in reply.text,
+   reply.text)
+ok("до «да» редактор не вызван и подписи целы",
+   not editor.calls
+   and dm.get_content_plan_item(first_id)["caption"].startswith("Мы очень-очень"),
+   (editor.calls, dm.get_content_plan_item(first_id).get("caption")))
+reply = core.handle("нет")
+ok("«нет» не зовёт редактора и не меняет подписи",
+   not editor.calls and core.pending is None
+   and dm.get_content_plan_item(first_id)["caption"].startswith("Мы очень-очень"),
+   (editor.calls, reply.text))
+core._execute("review_captions", {}, "rules")
+reply = core.handle("да")
+ok("после «да» редактор проверяет все подписи одним вызовом",
+   len(editor.calls) == 1, len(editor.calls))
 ok("в одном запросе обе подписи", "cp_002" in editor.calls[0][1], editor.calls[0][1][:200])
 ok("слабую подпись редактор переписал",
    str(dm.get_content_plan_item(first_id)["caption"]).startswith("Свежая обжарка"),
