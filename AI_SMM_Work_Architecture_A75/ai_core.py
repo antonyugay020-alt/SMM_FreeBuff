@@ -2120,15 +2120,23 @@ class AITools:
         return "У этой записи нет обратной операции"
 
     def _drop_remote(self, spec: Optional[Dict[str, Any]]) -> str:
-        """Убрать файл с хостинга при откате: без клиента говорим честно, что остался."""
+        """Убрать файл с хостинга при откате.
+
+        Если удалить нечем или хостинг не подтвердил удаление, говорим прямо:
+        ссылка из записи ушла, но файл по ней может открываться и дальше.
+        """
         if not spec or not spec.get("public_id"):
             return ""
+        public_id = str(spec["public_id"])
         client = self._cloudinary_client()
         if client is None:
-            return f"файл на хостинге остался ({spec['public_id']}): нет ключей Cloudinary"
-        if client.delete(str(spec["public_id"]), str(spec.get("resource_type") or "image")):
+            return (f"откат неполный: ссылка убрана из записи, но файл {public_id} остался "
+                    "публичным на хостинге — без ключей Cloudinary его не удалить, "
+                    "уберите вручную")
+        if client.delete(public_id, str(spec.get("resource_type") or "image")):
             return "файл с хостинга удалён"
-        return f"хостинг не подтвердил удаление {spec['public_id']} — уберите вручную"
+        return (f"откат неполный: хостинг не подтвердил удаление {public_id} — файл мог "
+                "остаться публичным, проверьте вручную")
 
 
 # === Router: rules → local → cloud → editor ===
@@ -3568,7 +3576,8 @@ class AICore:
                                         {}, self.tools.instagram_status, read_only=True))
         self.registry.register(ToolSpec("host_media",
                                         "выложить материал на публичный URL для публикации",
-                                        {"media_id": str}, self.tools.host_media))
+                                        {"media_id": str}, self.tools.host_media,
+                                        needs_confirmation=lambda a: True))
         self.registry.register(ToolSpec("instagram_publish",
                                         "опубликовать выложенный материал в Instagram (сначала проверка)",
                                         {"media_id": str, "dry_run": str, "again": str},
@@ -3742,6 +3751,12 @@ class AICore:
             what = " ".join(part for part in (f"«{title}»" if title else "",
                                               f"от {date}" if date else "") if part)
             return f"Удалить {what} из {place}?" if what else f"Удалить запись из {place}?"
+        if tool == "host_media":
+            found = self.tools._media_records([str(args.get("media_id") or "")])
+            name = str((found[0][2].get("name") if found else "") or "").strip()
+            what = f"«{name}»" if name else "материал"
+            return (f"Выложить {what} на публичный URL? "
+                    "Ссылку сможет открыть любой, у кого она есть.")
         if tool == "delete_material":
             item_id = str(args.get("item_id") or "")
             for folder, rows in (self.dm.get_other_files() or {}).items():

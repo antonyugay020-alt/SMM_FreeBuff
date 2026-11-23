@@ -1188,6 +1188,75 @@ reply = core.run_tool("delete_material", item_id="mat_1")
 ok("GUI-путь убирает материал без вопроса",
    not reply.needs_confirmation and not dm.get_other_files().get("Материалы"), reply.text)
 
+# --- выкладка на публичный URL: вопрос до загрузки и честный откат ---
+class FakeHost:
+    """Хостинг без сети: запоминает загрузки и удаления."""
+
+    def __init__(self, delete_ok=True):
+        self.uploads = []
+        self.deleted = []
+        self.delete_ok = delete_ok
+
+    def upload(self, file_path, public_id):
+        self.uploads.append((file_path, public_id))
+        return {"url": f"https://res.cloudinary.com/demo/image/upload/{public_id}.jpg",
+                "public_id": public_id, "resource_type": "image"}
+
+    def delete(self, public_id, resource_type="image"):
+        self.deleted.append((public_id, resource_type))
+        return self.delete_ok
+
+
+host_dir = Path(tempfile.mkdtemp(prefix="host_"))
+host_photo = host_dir / "пляж.jpg"
+host_photo.write_bytes(b"JPEG" * 100)
+dm, core, stub = build([])
+dm._data["media_ready"].append({"id": "m1", "name": "пляж.jpg", "type": "image",
+                                "path": str(host_photo), "status": "approved"})
+dm.save()
+host = FakeHost()
+core.tools.cloudinary = host
+reply = core.handle("выложи материал m1 на публичный url")
+ok("выкладка на URL просит подтверждение", reply.needs_confirmation, reply.text)
+ok("в вопросе имя файла и предупреждение о публичности",
+   "пляж.jpg" in reply.text and "публичн" in reply.text.lower(), reply.text)
+ok("до «да» ничего не загружено",
+   not host.uploads and "remote_url" not in dm.get_media_ready()[0],
+   (host.uploads, dm.get_media_ready()[0]))
+reply = core.handle("нет")
+ok("«нет» отменяет выкладку", not host.uploads and not reply.needs_confirmation,
+   (host.uploads, reply.text))
+core.handle("выложи материал m1 на публичный url")
+core.handle("да")
+record = dm.get_media_ready()[0]
+ok("после «да» файл выложен и ссылка записана",
+   len(host.uploads) == 1 and str(record.get("remote_url") or "").startswith("https://"),
+   (host.uploads, record))
+
+core.tools._cloudinary_client = lambda: None   # ключей нет: файл с хостинга не удалить
+message = core.undo(core.journal.list(1)[0]["id"]).text
+ok("откат без ключей прямо говорит, что файл остался публичным",
+   "остался публичным" in message and "Cloudinary" in message, message)
+ok("откат без ключей убрал ссылку из записи",
+   not dm.get_media_ready()[0].get("remote_url"), dm.get_media_ready()[0])
+del core.tools._cloudinary_client
+
+host_broken = FakeHost(delete_ok=False)
+core.tools.cloudinary = host_broken
+core.handle("выложи материал m1 на публичный url")
+core.handle("да")
+message = core.undo(core.journal.list(1)[0]["id"]).text
+ok("если хостинг не подтвердил удаление — сказано про публичность",
+   "мог остаться публичным" in message, message)
+
+host_ok = FakeHost()
+core.tools.cloudinary = host_ok
+core.handle("выложи материал m1 на публичный url")
+core.handle("да")
+message = core.undo(core.journal.list(1)[0]["id"]).text
+ok("откат с ключами удаляет файл с хостинга",
+   bool(host_ok.deleted) and "удалён" in message, (host_ok.deleted, message))
+
 # --- другая фраза вместо «да/нет» — явная отмена, а не тихая ---
 dm, core, stub = seeded_plan()
 before_ids = [str(item["id"]) for item in dm.get_content_plan()]
