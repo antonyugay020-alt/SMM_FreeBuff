@@ -154,6 +154,53 @@ ok("«нет» не продолжает задачу и не пишет под�
    (core.resume_task, reply.text))
 ok("«нет» не зовёт модель ещё раз", len(stub.calls) == calls_before,
    stub.calls[calls_before:])
+
+# --- продолжение не повторяет уже сделанные шаги ---
+class RepeatAware(Stage):
+    """Модель, которая повторила бы создание плана, если бы ей не сказали, что уже сделано."""
+
+    def __init__(self):
+        super().__init__(['{"action": "tool", "tool": "create_content_plan", '
+                          '"args": {"count": 2}}',
+                          '{"action": "tool", "tool": "write_captions", "args": {}}'])
+        self.repeats = 0
+
+    def chat(self, system, user, temperature=0.2, max_tokens=2048, fmt=""):
+        if "AI SMM Manager" in system and "Пользователь подтвердил" in user:
+            done = user.split("Уже сделано:")[-1].split("Доступные инструменты:")[0]
+            if "create_content_plan" not in done:
+                self.repeats += 1
+                text = '{"tool": "create_content_plan", "args": {"count": 2}}'
+            else:
+                text = '{"action": "done", "say": "Готово: план и подписи."}'
+            return LLMResult(text=text, provider=self.name, model="stub")
+        return super().chat(system, user, temperature, max_tokens, fmt)
+
+
+dm = DataManager("agent", tempfile.mkdtemp(prefix="agent_"))
+stage = RepeatAware()
+core = AICore(dm, {"monthly_budget_usd": 0},
+              app_db_path=Path(tempfile.mkdtemp(prefix="agent_db_")) / "app.db",
+              providers=(stage, None))
+reply = core.handle("подготовь контент")
+plan_ids_before = [str(item.get("id")) for item in dm.get_content_plan()]
+ok("план создан до вопроса", len(plan_ids_before) == 2, plan_ids_before)
+ok("пачка подписей ждёт ответа", reply.needs_confirmation, reply.text)
+ok("сделанные шаги переданы продолжению",
+   any("create_content_plan" in step for step in core.resume_steps), core.resume_steps)
+reply = core.handle("да")
+plan_after = dm.get_content_plan()
+ok("продолжение не создало план заново",
+   [str(item.get("id")) for item in plan_after] == plan_ids_before,
+   [str(item.get("id")) for item in plan_after])
+ok("модель не попросила повторить создание плана", stage.repeats == 0, stage.repeats)
+ok("подписи написаны и итог сказан",
+   all(str(item.get("caption") or "").strip() for item in plan_after)
+   and "Готово" in reply.text,
+   (reply.text, [item.get("caption") for item in plan_after]))
+ok("после продолжения задача снята с ожидания",
+   core.resume_task == "" and core.resume_steps == [],
+   (core.resume_task, core.resume_steps))
 ok("шаг агента просит JSON у модели", "json" in stub.formats, stub.formats)
 
 # --- публикацию агент не трогает ---
@@ -428,6 +475,11 @@ for day in range(1, 6):
 seeded = len(dm.get_content_plan())
 events_before = len(dm.get_calendar_events())
 reply = core.handle("добавь 5 постов в календарь")
+ok("раскладка по календарю спрашивает «да/нет»", reply.needs_confirmation, reply.text)
+ok("в вопросе сколько новых событий", "новых событий: 5" in reply.text, reply.text)
+ok("до «да» календарь не тронут",
+   len(dm.get_calendar_events()) == events_before, dm.get_calendar_events())
+reply = core.handle("да")
 ok("календарная фраза не создала дубли", len(dm.get_content_plan()) == seeded,
    f"{seeded} → {len(dm.get_content_plan())}")
 ok("календарная фраза расставила события",
@@ -871,6 +923,9 @@ ok("«сделай календарь на месяц» — события из 
    decision is not None and decision.tool == "sync_plan_events",
    getattr(decision, "tool", None))
 reply = core.handle("сделай календарь на месяц")
+ok("«сделай календарь на месяц» спрашивает «да/нет»", reply.needs_confirmation, reply.text)
+ok("до «да» событий нет", not dm.get_calendar_events(), dm.get_calendar_events())
+reply = core.handle("да")
 ok("события календаря созданы по датам плана",
    len(dm.get_calendar_events()) == 3, dm.get_calendar_events())
 ok("ответ говорит, сколько событий пришло из плана", "Из плана" in reply.text, reply.text)

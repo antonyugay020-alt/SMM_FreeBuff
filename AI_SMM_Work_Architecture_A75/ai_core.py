@@ -920,6 +920,21 @@ class AITools:
         return {"summary": "Запись удалена", "effect": {"id": item_id},
                 "undo": {"op": "restore_section", "section": section, "data": before}}
 
+    def sync_plan_events_count(self) -> Tuple[int, int]:
+        """Сколько событий появится и сколько позиций станет «Запланировано», без записи."""
+        events = self.dm._data.get("calendar_events") or []
+        linked = {str(event.get("link") or "") for event in events}
+        created = 0
+        for item in self.dm.get_content_plan():
+            if not item.get("date") or str(item.get("id")) in linked:
+                continue
+            linked.add(str(item.get("id")))
+            created += 1
+        planned = sum(1 for item in self.dm.get_content_plan()
+                      if str(item.get("id")) in linked
+                      and (item.get("status") or "Черновик") in ("", "Черновик"))
+        return created, planned
+
     def sync_plan_events(self) -> Dict[str, Any]:
         """Calendar events for dated plan items; drafts with an event become planned."""
         plan_before = copy.deepcopy(self.dm.get_content_plan())
@@ -2387,12 +2402,16 @@ class AIAgent:
                 f"событий календаря: {len(dm.get_calendar_events())}; "
                 f"ТЗ: {len(dm.get_shooting_tasks())}")
 
-    def run(self, task: str) -> Optional[AIReply]:
-        """Выполнить задачу шагами. None — модель не умеет вести агент, нужен обычный слой."""
+    def run(self, task: str, done: Optional[List[str]] = None) -> Optional[AIReply]:
+        """Выполнить задачу шагами. None — модель не умеет вести агент, нужен обычный слой.
+
+        `done` — шаги, уже сделанные до паузы на подтверждении: без них модель
+        начинает задачу с нуля и повторяет создание плана или подписей.
+        """
         provider = self._provider()
         if provider is None:
             return None
-        history: List[str] = []
+        history: List[str] = list(done or [])
         actions: List[Dict[str, Any]] = []
         catalog = self.tools_catalog()
         allowed = {name for name in self.registry.names() if name not in AGENT_DENY}
@@ -2470,6 +2489,7 @@ class AIAgent:
             if reply.needs_confirmation:
                 # операция просит подтверждения — останавливаемся и передаём вопрос человеку
                 self.core.resume_task = task
+                self.core.resume_steps = list(history)
                 return AIReply(reply.text, "agent",
                                list(actions) + list(reply.actions or []),
                                needs_confirmation=True, pending_tool=reply.pending_tool,
@@ -3554,6 +3574,7 @@ class AICore:
         self.open_task: str = ""
         # Агентская задача, прерванная подтверждением: «да» доделывает её до конца.
         self.resume_task: str = ""
+        self.resume_steps: List[str] = []
 
     # --- setup ---
     def _register_tools(self) -> None:
@@ -3600,7 +3621,9 @@ class AICore:
                                         {"section": str, "item_id": str}, self.tools.delete_record,
                                         needs_confirmation=lambda a: True))
         self.registry.register(ToolSpec("sync_plan_events", "события календаря из позиций плана",
-                                        {}, self.tools.sync_plan_events))
+                                        {}, self.tools.sync_plan_events,
+                                        needs_confirmation=lambda a: any(
+                                            self.tools.sync_plan_events_count())))
         self.registry.register(ToolSpec("validate_plan", "проверка плана: даты, подписи, ТЗ",
                                         {}, self.tools.validate_plan, read_only=True))
         self.registry.register(ToolSpec("plan_report",
@@ -3691,12 +3714,14 @@ class AICore:
             if re.match(r"^(нет|no|отмена)\b", text.lower()):
                 self.pending = None
                 self.resume_task = ""
+                self.resume_steps = []
                 return AIReply("Отменил, ничего не записал.")
             # Вместо «да»/«нет» пришла другая фраза: операция не выполняется
             # и человеку сказано об этом прямо, а не молча.
             tool = self.pending[0]
             self.pending = None
             self.resume_task = ""
+            self.resume_steps = []
             spec = self.registry.get(tool)
             what = spec.description if spec is not None else tool
             return AIReply(f"Отменил «{what}»: вместо «да» или «нет» пришла другая фраза. "
@@ -3733,14 +3758,16 @@ class AICore:
         что человек согласился, и он идёт дальше по текущему состоянию проекта.
         """
         task = self.resume_task
+        steps = list(self.resume_steps)
         self.resume_task = ""
+        self.resume_steps = []
         if not task:
             return reply
         spec = self.registry.get(tool)
         what = spec.description if spec is not None else tool
         note = (f"{task}\nПользователь подтвердил «{what}» — шаг выполнен. "
-                "Продолжай задачу с текущего состояния проекта.")
-        more = self._agent().run(note)
+                "Продолжай задачу с текущего состояния проекта и не повторяй уже сделанное.")
+        more = self._agent().run(note, done=steps)
         if more is None:
             return reply
         text = "\n".join(part for part in ((reply.text or "").strip(),
@@ -3867,6 +3894,15 @@ class AICore:
                 return (f"Убрать «{name}» из списка «{folder}»?" if name
                         else f"Убрать материал из списка «{folder}»?")
             return "Убрать материал из списка?"
+        if tool == "sync_plan_events":
+            created, planned = self.tools.sync_plan_events_count()
+            parts = []
+            if created:
+                parts.append(f"новых событий: {created}")
+            if planned:
+                parts.append(f"в «Запланировано»: {planned}")
+            return (f"Разложить план по календарю ({', '.join(parts) or 'без изменений'})? "
+                    "Календарь и статусы позиций изменятся.")
         if tool == "write_captions":
             plan_id = str(args.get("plan_id") or "")
             if plan_id:
