@@ -1883,8 +1883,10 @@ class AITools:
         preview = (f"{name}: @{access['username'] or ig_user}, {media_type}, "
                    f"осталось публикаций {left['left']} из {left['total']}")
         if str(dry_run).lower() not in ("0", "false", "нет"):
+            # Проверка ничего не меняет: пустые effect/undo держат её вне журнала,
+            # иначе dry-run выглядел бы как выполненная публикация с откатом.
             return {"summary": "Проверка прошла, публикация не запущена: " + preview,
-                    "effect": {"dry_run": True, "url": url, "caption_chars": len(caption)},
+                    "effect": {},
                     "undo": {}}
         try:
             container = instagram_auth.create_container(

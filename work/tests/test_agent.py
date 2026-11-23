@@ -144,6 +144,38 @@ ok("запрещённый инструмент не попал в журнал"
    all(entry["tool"] != "instagram_publish" for entry in core.journal.list(10)),
    [entry["tool"] for entry in core.journal.list(10)])
 
+# --- dry-run публикации: проверка не оставляет записи об изменении ---
+class FakeTokenStore:
+    def load_token(self):
+        return "IGAA-test"
+
+
+dm, core, stub = build([])
+dm._data["media_ready"].append({"id": "m1", "name": "p.jpg", "type": "image",
+                                "path": "/nope/p.jpg", "status": "approved",
+                                "remote_url": "https://res.cloudinary.com/demo/p.jpg"})
+dm.save()
+import instagram_auth
+orig_access, orig_limit = instagram_auth.check_access, instagram_auth.publishing_limit
+instagram_auth.check_access = lambda token: {"ok": True, "ig_user_id": "1789", "username": "studio"}
+instagram_auth.publishing_limit = lambda token, ig_user_id: {"left": 5, "total": 50, "used": 45}
+core.tools.tokens = FakeTokenStore()
+out = core.tools.instagram_publish("m1")
+ok("dry-run публикации ничего не меняет",
+   out["effect"] == {} and out["undo"] == {}, out)
+before = len(core.journal.list(50))
+reply = core.run_tool("instagram_publish", media_id="m1")
+ok("dry-run публикации говорит, что публикация не запущена",
+   "не запущена" in reply.text, reply.text)
+ok("dry-run публикации не оставляет записи в журнале",
+   len(core.journal.list(50)) == before,
+   [entry["tool"] for entry in core.journal.list(50)])
+ok("dry-run не ставит отметку публикации",
+   "published_id" not in dm.get_media_ready()[0]
+   and "published" not in dm.get_media_ready()[0].get("processed", []),
+   dm.get_media_ready()[0])
+instagram_auth.check_access, instagram_auth.publishing_limit = orig_access, orig_limit
+
 # --- нет модели: не выдумывает, а честно говорит причину ---
 dm, core, _ = build([], providers=False)
 reply = core.handle("подготовь кофейне контент на неделю")
