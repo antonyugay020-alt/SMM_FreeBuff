@@ -338,7 +338,8 @@ class ToolRegistry:
 # === Plan readiness: one rule set for the GUI check and the legacy pipeline ===
 
 NO_DATE, NO_CAPTION, NO_TASK = "без даты", "без подписи", "без ТЗ"
-PLAN_FORMATS = {"пост": "Пост", "reels": "Reels", "рилс": "Reels", "карусель": "Карусель"}
+PLAN_FORMATS = {"пост": "Пост", "reels": "Reels", "рилс": "Reels", "карусель": "Карусель",
+                "stories": "Stories", "сторис": "Stories"}
 CAPTION_LIMIT = 400
 TOPIC_LIMIT = 60
 
@@ -1024,7 +1025,8 @@ class AITools:
             return today
         return max(max(dates) + timedelta(days=1), today)
 
-    def _plan_topics(self, topics: Optional[List[Any]], count: int, brief: str) -> List[Dict[str, Any]]:
+    def _plan_topics(self, topics: Optional[List[Any]], count: int, brief: str,
+                     fmt: str = "") -> List[Dict[str, Any]]:
         """Темы из аргумента, иначе — от модели; пустой список, если модель недоступна."""
         prepared: List[Dict[str, Any]] = []
         for raw in topics or []:
@@ -1033,15 +1035,19 @@ class AITools:
             elif isinstance(raw, dict) and str(raw.get("topic") or "").strip():
                 prepared.append(raw)
         if not prepared and getattr(self, "router", None) is not None:
-            prepared = self.router.generate_plan_topics(count, brief)
+            prepared = self.router.generate_plan_topics(count, brief, fmt)
         return prepared[:count]
 
     def create_content_plan(self, count: int = 5, rubrics: Optional[List[str]] = None,
                             start: Optional[str] = None, period_days: int = 7,
-                            topics: Optional[List[Any]] = None) -> Dict[str, Any]:
+                            topics: Optional[List[Any]] = None,
+                            format: str = "") -> Dict[str, Any]:
         count = max(1, min(int(count or 5), 60))
         rubrics = [r for r in (rubrics or []) if str(r).strip()] or ["Полезное"]
-        suggested = self._plan_topics(topics, count, ", ".join(rubrics if rubrics != ["Полезное"] else []))
+        wanted_format = PLAN_FORMATS.get(str(format or "").strip().lower(), "")
+        suggested = self._plan_topics(topics, count,
+                                      ", ".join(rubrics if rubrics != ["Полезное"] else []),
+                                      wanted_format)
         try:
             start_date = datetime.strptime(start, "%d.%m.%Y") if start else self._next_plan_date()
         except ValueError:
@@ -1060,7 +1066,8 @@ class AITools:
                     "rubric": rubric,
                     "topic": str(idea.get("topic") or "").strip()
                              or f"{rubrics[index % len(rubrics)]}: идея {index + 1}",
-                    "format": PLAN_FORMATS.get(str(idea.get("format") or "").strip().lower(), "Пост"),
+                    "format": wanted_format or PLAN_FORMATS.get(
+                        str(idea.get("format") or "").strip().lower(), "Пост"),
                     "status": "Черновик",
                     "responsible": "SMM",
                     "strategy_link": "",
@@ -2317,15 +2324,16 @@ class AIRouter:
             return RouteDecision("get_project_context", {"scope": "media"}, "rules")
         if re.search(r"(покажи|какие|что|сколько|список).{0,25}(стратег|блок|раздел|kpi|кпи)", low):
             return RouteDecision("get_project_context", {"scope": "strategy"}, "rules")
-        # «покажи ближайшие посты», «что выходит завтра» — чтение плана, без действий
-        if re.search(r"ближайш\w*\s+(?:пост|публикац|позици|запис)"
-                     r"|что\s+(?:выходит|выйдет|публику\w*|запланирован\w*|стоит\s+в\s+плане"
-                     r"|писать|постить)"
-                     r"|(?:пост|публикац)\w*\s+на\s+(?:завтра|сегодня|послезавтра)", low) \
+        # «покажи ближайшие посты», «что выходит завтра» — чтение плана, без действий;
+        # «что писать» — только когда назван день или период, иначе это про подпись
+        if (re.search(r"ближайш\w*\s+(?:пост|публикац|позици|запис)"
+                      r"|что\s+(?:выходит|выйдет|публику\w*|запланирован\w*|стоит\s+в\s+плане)"
+                      r"|(?:пост|публикац)\w*\s+на\s+(?:завтра|сегодня|послезавтра)", low)
+                or _writing_with_period(low)) \
                 and not re.search(r"перенес|перестав|измени|поменяй|смени|сдвинь|поставь"
                                   r"|добавь|создай|запланируй|удали|убери", low):
             upcoming_args = {"scope": "upcoming"}
-            day = _relative_day(low)
+            day = _relative_day(low) or _full_date(low) or _date_from_words(low)
             if day:
                 upcoming_args["date"] = day
             return RouteDecision("get_project_context", upcoming_args, "rules")
@@ -2337,6 +2345,13 @@ class AIRouter:
             return RouteDecision("get_project_context", {"scope": "plan"}, "rules")
         if re.search(r"(сделай|собери|создай|разработай).{0,20}стратеги", low):
             return RouteDecision("create_strategy", {"brief": text}, "rules")
+        # «напиши 3 идеи для сторис» — позиции плана формата Stories, а не посты
+        if re.search(r"(?:идеи|идея|сюжет\w*|сценар\w*|кадр\w*).{0,25}сторис"
+                     r"|сторис\w*.{0,25}(?:идеи|идея|сюжет\w*|сценар\w*|кадр\w*)", low) \
+                and re.search(r"напиши|придумай|предложи|подбери|дай|сделай|скинь|нужн|хочу", low):
+            return RouteDecision("create_content_plan",
+                                 {"count": _first_int(low) or 3, "period_days": 1,
+                                  "format": "Stories"}, "rules")
         if re.search(r"(придумай|предложи|подбери).{0,25}(тем|идеи)", low):
             return RouteDecision("create_content_plan",
                                  {"count": _first_int(low) or 10,
@@ -2680,11 +2695,20 @@ class AIRouter:
                     return built
         return []
 
-    def generate_plan_topics(self, count: int = 10, brief: str = "") -> List[Dict[str, Any]]:
+    def generate_plan_topics(self, count: int = 10, brief: str = "",
+                             fmt: str = "") -> List[Dict[str, Any]]:
         """Темы для контент-плана от модели: тема, рубрика, формат. Без модели — пусто."""
         profile = (self.profile_getter() if hasattr(self, "profile_getter") else {}) or {}
         strategy = (self.strategy_getter() if hasattr(self, "strategy_getter") else {}) or {}
         sections = [f"{s.get('title')}: {s.get('content')}" for s in strategy.get("sections") or []]
+        wanted = PLAN_FORMATS.get(str(fmt or "").strip().lower(), "")
+        if wanted == "Stories":
+            shape = ("Каждая тема — сюжет или кадр для сторис, который снимается за минуту: "
+                     "что показать и что сказать. format — «Stories». ")
+        elif wanted:
+            shape = f"format — «{wanted}» для всех тем. "
+        else:
+            shape = "format — только «Пост», «Reels» или «Карусель». "
         system = ("Ты SMM-стратег. Верни JSON: {\"topics\": [{\"topic\": \"...\", \"rubric\": \"...\", "
                   "\"format\": \"Пост\"}]}. Темы конкретные и разные, без нумерации и без слова «идея». "
                   "Тема — короткий заголовок до 60 символов, без точки в конце и без императива "
@@ -2693,10 +2717,11 @@ class AIRouter:
                   "Каждая тема — про гостя и его выгоду: что он получит, попробует, сэкономит или почувствует. "
                   "Не предлагай темы про то, как гость готовит или обжаривает кофе дома, и про внутренние "
                   "процессы без пользы для гостя. "
-                  "format — только «Пост», «Reels» или «Карусель». Пиши по-русски.")
+                  + shape + "Пиши по-русски.")
         user = (f"Бренд-профиль: {json.dumps(profile, ensure_ascii=False)}\n"
                 f"Стратегия: {' | '.join(sections) or 'нет'}\n"
-                f"Задача: {brief or 'контент на ближайшие дни'}\nТем: {count}")
+                f"Задача: {brief or 'контент на ближайшие дни'}\n"
+                f"Формат: {wanted or 'по правилам'}\nТем: {count}")
         raw = self._generate(system, user, "plan_topics")
         for data in _json_candidates(raw):
             topics = data.get("topics") if isinstance(data, dict) else None
@@ -2991,6 +3016,15 @@ def _full_date(text: str) -> str:
     return when.strftime("%d.%m.%Y")
 
 
+def _writing_with_period(text: str) -> bool:
+    """«Что писать завтра/на неделе» — да; «что писать в подписи к посту» — нет, это про подпись."""
+    low = str(text or "").lower()
+    if not re.search(r"что\s+(?:писать|постить)", low):
+        return False
+    return bool(_relative_day(low) or _full_date(low) or _date_from_words(low)
+                or re.search(r"\bна\s+(?:этой\s+|следующ\w+\s+)?недел|\bвыходн|\bна\s+месяц", low))
+
+
 def _relative_day(text: str) -> str:
     """«сегодня»/«завтра»/«послезавтра» → дата dd.mm.YYYY, иначе пустая строка."""
     low = str(text or "").lower()
@@ -3174,7 +3208,8 @@ class AICore:
                                         self.tools.update_strategy_section))
         self.registry.register(ToolSpec("create_content_plan", "создать позиции контент-плана",
                                         {"count": int, "rubrics": list, "start": str,
-                                         "period_days": int, "topics": list},
+                                         "period_days": int, "topics": list,
+                                         "format": str},
                                         self.tools.create_content_plan))
         self.registry.register(ToolSpec("schedule_posts", "расставить даты и события",
                                         {"plan_ids": list, "dates": list},

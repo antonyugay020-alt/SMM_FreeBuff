@@ -676,6 +676,35 @@ ok("события календаря созданы по датам плана"
 ok("ответ говорит, сколько событий пришло из плана", "Из плана" in reply.text, reply.text)
 ok("«сделай календарь на месяц» не дёргает модель", not stub.calls, stub.calls)
 
+# --- «что писать» — только с днём или периодом ---
+dm, core, stub = seeded_plan()
+decision = core.router._rules("что писать в подписи к посту")
+ok("«что писать в подписи к посту» — не ближайшие посты",
+   decision is not None and decision.args.get("scope") != "upcoming",
+   getattr(decision, "args", None))
+ok("«что писать в подписи к посту» — это про подпись",
+   decision is not None and decision.tool == "write_captions",
+   getattr(decision, "tool", None))
+decision = core.router._rules("что писать на этой неделе")
+ok("«что писать на этой неделе» — ближайшие посты",
+   decision is not None and decision.tool == "get_project_context"
+   and decision.args.get("scope") == "upcoming", getattr(decision, "args", None))
+
+# --- «напиши 3 идеи для сторис» ---
+dm, core, stub = build([])
+decision = core.router._rules("напиши 3 идеи для сторис")
+ok("«идеи для сторис» — план формата Stories",
+   decision is not None and decision.tool == "create_content_plan"
+   and decision.args.get("count") == 3
+   and decision.args.get("format") == "Stories", getattr(decision, "args", None))
+reply = core.handle("напиши 3 идеи для сторис")
+items = dm.get_content_plan()
+ok("создано три позиции формата Stories",
+   len(items) == 3 and all(item.get("format") == "Stories" for item in items),
+   [(item.get("format"), item.get("topic")) for item in items])
+ok("«идеи для сторис» — ответ о позициях плана",
+   "контент-плана" in reply.text, reply.text)
+
 # --- будущих позиций нет: двигаем последнюю, а не молчим ---
 dm, core, stub = build([])
 dm.add_content_plan_item({"topic": "Старый", "rubric": "Польза", "format": "Пост",
