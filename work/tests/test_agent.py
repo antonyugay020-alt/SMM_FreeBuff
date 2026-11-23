@@ -1257,6 +1257,37 @@ message = core.undo(core.journal.list(1)[0]["id"]).text
 ok("откат с ключами удаляет файл с хостинга",
    bool(host_ok.deleted) and "удалён" in message, (host_ok.deleted, message))
 
+# --- откат без обратной операции: статус записи не меняется ---
+dm, core, stub = build([])
+audit_id = core.journal.log("instagram_publish", {"item_id": "cp_001"},
+                            {"note": "проверка без публикации: ничего не отправлено"}, {},
+                            actor="user")
+reply = core.undo(audit_id)
+ok("без обратной операции откат говорит об этом прямо",
+   "нет обратной операции" in reply.text, reply.text)
+ok("без обратной операции запись не помечена отменённой",
+   core.journal.get(audit_id)["status"] == "done", dict(core.journal.get(audit_id)))
+ok("несостоявшийся откат не пишет служебную запись «undo»",
+   not any(entry["tool"] == "undo" for entry in core.journal.list(10)),
+   [entry["tool"] for entry in core.journal.list(10)])
+
+reply = core.handle("отмени последнее")
+ok("«отмени последнее» тоже не врёт про отмену",
+   "нет обратной операции" in reply.text, reply.text)
+ok("после «отмени последнее» статус прежний",
+   core.journal.get(audit_id)["status"] == "done", dict(core.journal.get(audit_id)))
+
+real_id = core.journal.log("demo_change", {}, {"note": "добавил пост"},
+                           {"op": "restore_section", "section": "content_plan", "data": []},
+                           actor="user")
+reply = core.undo(real_id)
+ok("настоящий откат по-прежнему помечает запись отменённой",
+   core.journal.get(real_id)["status"] == "undone" and "Откатил" in reply.text,
+   (dict(core.journal.get(real_id)), reply.text))
+ok("служебная запись «undo» появляется только за настоящий откат",
+   [entry["tool"] for entry in core.journal.list(10)].count("undo") == 1,
+   [entry["tool"] for entry in core.journal.list(10)])
+
 # --- другая фраза вместо «да/нет» — явная отмена, а не тихая ---
 dm, core, stub = seeded_plan()
 before_ids = [str(item["id"]) for item in dm.get_content_plan()]

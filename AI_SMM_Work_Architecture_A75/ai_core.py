@@ -2083,6 +2083,14 @@ class AITools:
                 "undo": {"op": "restore_sections", "sections": {"other_files": before}}}
 
     # --- undo dispatcher ---
+    # Обратные операции, которые инструменты действительно умеют выполнять.
+    UNDO_OPS = ("restore_section", "restore_strategy", "restore_brand_profile",
+                "restore_sections", "delete_file", "delete_folder", "noop")
+
+    def can_undo(self, action: Dict[str, Any]) -> bool:
+        """Была ли у записи обратная операция: статус меняем только за настоящий откат."""
+        return (action.get("undo") or {}).get("op") in self.UNDO_OPS
+
     def undo(self, action: Dict[str, Any]) -> str:
         spec = action.get("undo") or {}
         op = spec.get("op")
@@ -3811,11 +3819,19 @@ class AICore:
             return AIReply("В журнале нет действий для отката.")
         last = entries[0]
         message = self.tools.undo(last)
-        self.journal.mark_undone(last["id"])
-        self.journal.log("undo", {"action_id": last["id"]}, {"undone": last["id"]}, {},
+        if not self._finish_undo(last["id"], last):
+            return AIReply(message, "journal")
+        return AIReply(message, "journal", [{"id": last["id"], "tool": "undo", "summary": message}])
+
+    def _finish_undo(self, action_id: str, action: Dict[str, Any]) -> bool:
+        """Отметить запись отменённой — только если обратная операция была на самом деле."""
+        if not self.tools.can_undo(action):
+            return False
+        self.journal.mark_undone(action_id)
+        self.journal.log("undo", {"action_id": action_id}, {"undone": action_id}, {},
                          actor="user")
         self._refresh_ui()
-        return AIReply(message, "journal", [{"id": last["id"], "tool": "undo", "summary": message}])
+        return True
 
     def ensure_local_model(self) -> Dict[str, Any]:
         """Проверить, что локальная модель есть и загружена; иначе выбрать из установленных."""
@@ -3858,9 +3874,8 @@ class AICore:
             return AIReply("Запись не найдена.")
         action = {"id": row["id"], "tool": row["tool"], "undo": _loads(row["undo"])}
         message = self.tools.undo(action)
-        self.journal.mark_undone(action_id)
-        self.journal.log("undo", {"action_id": action_id}, {"undone": action_id}, {}, actor="user")
-        self._refresh_ui()
+        # Обратной операции может не быть — тогда запись остаётся «done», а не врёт.
+        self._finish_undo(action_id, action)
         return AIReply(message, "journal")
 
     def _journal_reply(self) -> AIReply:
