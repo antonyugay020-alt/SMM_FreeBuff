@@ -2407,11 +2407,11 @@ class AIRouter:
                               r"(?:на|во)\s+\S+", low)
         if (change_date or move_post) and re.search(r"пост|позици|публикац|план", low) \
                 and not re.search(r"\bвсе\b|\bвсё\b", low):
-            when = _date_from_words(low) or _relative_day(low)
+            when = _date_from_words(low) or _full_date(low) or _relative_day(low)
             if not when:
                 return RouteDecision("", {}, "rules", 0.4,
                                      "На какую дату перенести? Скажите так: "
-                                     "«измени дату поста на 5 декабря».")
+                                     "«измени дату поста на 5 декабря» или «на 05.12.2026».")
             item_id, problem = self._plan_id_from_text(text, default_nearest=True)
             if problem:
                 return RouteDecision("", {}, "rules", 0.4, problem)
@@ -2965,6 +2965,18 @@ def _date_from_words(text: str) -> str:
         if when >= today:
             return when.strftime("%d.%m.%Y")
     return ""
+
+
+def _full_date(text: str) -> str:
+    """«На 05.12.2026» → 05.12.2026, если такая дата есть в календаре; иначе пустая строка."""
+    match = re.search(r"\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b", str(text or ""))
+    if not match:
+        return ""
+    try:
+        when = datetime(int(match.group(3)), int(match.group(2)), int(match.group(1)))
+    except ValueError:
+        return ""
+    return when.strftime("%d.%m.%Y")
 
 
 def _relative_day(text: str) -> str:

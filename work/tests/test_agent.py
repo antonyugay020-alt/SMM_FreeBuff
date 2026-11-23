@@ -607,6 +607,36 @@ ok("номер сильнее «ближайшей» при переносе",
    decision is not None and decision.args.get("item_id") == order_ids[2],
    getattr(decision, "args", None))
 
+# --- полная дата дд.мм.гггг понимается правилом смены даты ---
+dm, core, stub = seeded_plan()
+full_ids = [str(item["id"]) for item in dm.get_content_plan()]
+decision = core.router._rules("перенеси пост на 05.12.2026")
+ok("полная дата дд.мм.гггг не превращается в вопрос",
+   decision is not None and decision.tool == "edit_record"
+   and decision.args.get("fields", {}).get("date") == "05.12.2026",
+   getattr(decision, "args", None))
+ok("полная дата двигает ближайшую будущую позицию",
+   decision is not None and decision.args.get("item_id") == full_ids[0],
+   getattr(decision, "args", None))
+reply = core.handle("перенеси пост на 05.12.2026")
+dates = [str(item.get("date")) for item in dm.get_content_plan()]
+ok("дата дд.мм.гггг записана в позицию",
+   dates == ["05.12.2026", "02.04.2027", "03.04.2027"], dates)
+ok("ответ называет дату из фразы, модель не тронута",
+   "05.12.2026" in reply.text and not stub.calls, (reply.text, stub.calls))
+decision = core.router._rules("перенеси пост на 02.04.2027")
+ok("дата из фразы адресует позицию",
+   decision is not None and decision.args.get("item_id") == full_ids[1],
+   getattr(decision, "args", None))
+decision = core.router._rules("измени дату поста на 01.06.2027")
+ok("полная дата работает и в «измени дату»",
+   decision is not None and decision.args.get("fields", {}).get("date") == "01.06.2027",
+   getattr(decision, "args", None))
+broken = core.router._rules("перенеси пост на 31.02.2027")
+ok("несуществующая дата — вопрос, а не выдумка",
+   broken is not None and not broken.tool and "дату" in (broken.clarify or ""),
+   getattr(broken, "clarify", None))
+
 # --- будущих позиций нет: двигаем последнюю, а не молчим ---
 dm, core, stub = build([])
 dm.add_content_plan_item({"topic": "Старый", "rubric": "Польза", "format": "Пост",
