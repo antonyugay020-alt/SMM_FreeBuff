@@ -479,6 +479,56 @@ for text in ("добавь раздел в стратегию про конку�
        decision is not None and not decision.tool and bool(decision.clarify),
        getattr(decision, "clarify", None))
 
+# --- третий обмер: профиль на чтение, номер поста, проверка подписей, Excel ---
+dm, core, stub = seeded_plan()
+dm.save_brand_profile({"client_name": "Кофейня «Каз»", "niche": "кофе домой",
+                       "tone_of_voice": "дружелюбный"})
+decision = core.router._rules("покажи бренд-профиль")
+ok("«покажи бренд-профиль» — чтение, а не интервью",
+   decision is not None and decision.tool == "get_project_context"
+   and decision.args.get("scope") == "profile", getattr(decision, "tool", None))
+reply = core.handle("покажи бренд-профиль")
+ok("чтение профиля показывает поля и не начинает интервью",
+   "Кофейня «Каз»" in reply.text and "Как называется клиент" not in reply.text, reply.text)
+decision = core.router._rules("заполни бренд-профиль заново")
+ok("«заполни бренд-профиль заново» — по-прежнему интервью",
+   decision is not None and decision.tool == "brand_profile_interview",
+   getattr(decision, "tool", None))
+
+dm, core, stub = seeded_plan()
+plan_ids = [str(item["id"]) for item in dm.get_content_plan()]
+decision = core.router._rules("перепиши подпись второго поста короче")
+ok("«второго поста» — вторая позиция, а не последняя",
+   decision is not None and decision.tool == "write_captions"
+   and decision.args.get("plan_id") == plan_ids[1], getattr(decision, "args", None))
+reply = core.handle("перепиши подпись второго поста короче")
+plan = dm.get_content_plan()
+ok("подпись получил второй пост, первый не тронут",
+   bool(plan[1].get("caption")) and not plan[0].get("caption"),
+   [item.get("caption") for item in plan])
+decision = core.router._rules("убери вторую позицию из плана")
+ok("порядковый номер работает и при удалении",
+   decision is not None and decision.tool == "delete_record"
+   and decision.args.get("item_id") == plan_ids[1], getattr(decision, "args", None))
+
+dm, core, stub = seeded_plan()
+decision = core.router._rules("проверь, все ли посты с подписями")
+ok("«проверь, все ли посты с подписями» — validate_plan",
+   decision is not None and decision.tool == "validate_plan", getattr(decision, "tool", None))
+reply = core.handle("проверь, все ли посты с подписями")
+ok("проверка подписей считает позиции без подписи",
+   "без подписи" in reply.text and "3 из 3" in reply.text, reply.text)
+
+dm, core, stub = seeded_plan()
+decision = core.router._rules("экспортируй план в excel")
+ok("«экспортируй план в excel» — честный отказ",
+   decision is not None and not decision.tool and "Excel" in (decision.clarify or ""),
+   getattr(decision, "clarify", None))
+reply = core.handle("экспортируй план в excel")
+ok("Excel не уходит в пакет и не просит подтверждения",
+   not reply.needs_confirmation and "PDF" in reply.text, reply.text)
+ok("фразы третьего обмера не дёргают модель", not stub.calls, stub.calls)
+
 # --- обработка всех фото просит подтверждение ---
 from PIL import Image
 

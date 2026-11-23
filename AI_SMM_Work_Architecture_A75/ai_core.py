@@ -577,6 +577,8 @@ class AITools:
             summary += self._media_lines()
         elif scope_key == "strategy":
             summary += self._strategy_lines(strat)
+        elif scope_key == "profile":
+            summary += self._profile_lines(profile)
         return {
             "summary": summary,
             "effect": {"profile_filled": bool(profile.get("client_name")),
@@ -615,6 +617,19 @@ class AITools:
             lines.append(f"KPI: {rows}")
         else:
             lines.append("KPI не заданы.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _profile_lines(profile: Dict[str, Any]) -> str:
+        """Бренд-профиль для чтения: заполненные поля, без запуска интервью."""
+        filled = [(key, str(value).strip()) for key, value in (profile or {}).items()
+                  if key not in ("id", "updated_at") and str(value).strip()]
+        if not filled:
+            return "\nБренд-профиль пуст — скажите «заполни бренд-профиль»."
+        lines = [f"\nБренд-профиль (заполнено полей: {len(filled)}):"]
+        for key, value in filled:
+            lines.append(f"· {PROFILE_LABELS.get(key, key)}: {value[:120]}"
+                         + ("…" if len(value) > 120 else ""))
         return "\n".join(lines)
 
     @staticmethod
@@ -2197,6 +2212,9 @@ class AIRouter:
     def _rules(self, text: str) -> Optional[RouteDecision]:
         low = text.lower()
         if re.search(r"бренд.?профил|профил[ья] бренда|заполни профиль", low):
+            # «покажи бренд-профиль» — чтение; интервью остаётся только на заполнение
+            if re.search(r"покаж|посмотри|прочитай|открой|какой|какое|что в|заполнен|есть ли", low):
+                return RouteDecision("get_project_context", {"scope": "profile"}, "rules")
             return RouteDecision("brand_profile_interview", {}, "rules")
         if re.search(r"отмени последн|откати последн|undo", low):
             return RouteDecision("undo_last", {}, "rules")
@@ -2252,6 +2270,11 @@ class AIRouter:
             return RouteDecision("export_pdf",
                                  {"kind": "strategy" if "стратег" in low else "plan"},
                                  "rules")
+        if re.search(r"excel|эксель|xlsx|csv|\bв таблиц", low):
+            return RouteDecision("", {}, "rules", 0.4,
+                                 "Excel-выгрузки нет: план и стратегию выгружаю в PDF "
+                                 "(«экспортируй план в PDF»), а публикации — пакетом "
+                                 "(«собери пакет публикаций»).")
         if re.search(r"проверь.{0,20}(доступ|инстаграм|instagram)|доступ к инстаграм", low):
             return RouteDecision("instagram_status", {}, "rules")
         if re.search(r"опублику\w*|запости\w*|publish", low):
@@ -2369,8 +2392,8 @@ class AIRouter:
                                      "удалять нечего.")
             return RouteDecision("delete_record",
                                  {"section": section, "item_id": item_id}, "rules")
-        if re.search(r"(проверь|проверить|проверка).{0,25}(план|публикац|позиц)"
-                     r"|(план|публикац).{0,20}провер", low):
+        if re.search(r"(проверь|проверить|проверка|все ли).{0,25}(план|публикац|позиц|пост|подпис)"
+                     r"|(план|публикац|пост|подпис).{0,20}провер", low):
             return RouteDecision("validate_plan", {}, "rules")
         if re.search(r"инстаграм|instagram", low) and re.search(r"пакет|публикац|выгруз|собери|подготовь", low):
             return RouteDecision("instagram_pack", {}, "rules")
@@ -2595,6 +2618,11 @@ class AIRouter:
             if date and date in text:
                 return str(item.get("id") or ""), ""
         low = text.lower()
+        ordinal = _ordinal_number(low)
+        if ordinal:
+            if ordinal <= len(items):
+                return str(items[ordinal - 1].get("id") or ""), ""
+            return "", f"В плане {len(items)} позиций — номера {ordinal} нет."
         match = (re.search(r"(?:№|номер\s*|пост\s*|позици[яи]\s*)(\d{1,3})", low)
                  or re.search(r"(\d{1,3})(?:-?[йоге])?\s*(?:пост|позици)", low))
         if match:
@@ -2720,6 +2748,26 @@ class AIRouter:
 
     def dm_media(self) -> List[Dict[str, Any]]:
         return list(getattr(self, "media_getter", lambda: [])())
+
+
+PROFILE_LABELS = {"client_name": "Бренд", "niche": "Ниша и продукт", "city": "География",
+                  "audience": "Аудитория", "positioning": "Позиционирование",
+                  "tone_of_voice": "Tone of voice", "languages": "Языки",
+                  "stop_words": "Стоп-слова", "banned_topics": "Запрещённые темы",
+                  "visual_rules": "Визуальные правила"}
+
+_ORDINALS = [("перв", 1), ("втор", 2), ("трет", 3), ("четв[её]рт", 4), ("пят", 5),
+             ("шест", 6), ("седьм", 7), ("восьм", 8), ("девят", 9), ("десят", 10)]
+_ORDINAL_END = r"(?:ый|ий|ой|ая|ое|ого|ому|ым|ую|его|ем|ьего|ьей)"
+
+
+def _ordinal_number(text: str) -> int:
+    """Номер из «второго поста» / «пятую позицию»; 0 — если порядкового нет."""
+    low = str(text or "").lower()
+    for stem, number in _ORDINALS:
+        if re.search(rf"\b{stem}{_ORDINAL_END}\s+(?:пост|позици|публикац|запис|событи)", low):
+            return number
+    return 0
 
 
 def _first_int(text: str) -> Optional[int]:
