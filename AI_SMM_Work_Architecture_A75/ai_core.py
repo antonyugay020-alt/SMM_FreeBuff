@@ -2095,6 +2095,12 @@ class AIAgent:
             args = {key: value for key, value in raw_args.items() if key in spec.args}
             plan_before = {str(item.get("id")) for item in self.core.dm.get_content_plan()}
             reply = self.core._execute(tool, args, "agent")
+            if reply.needs_confirmation:
+                # операция просит подтверждения — останавливаемся и передаём вопрос человеку
+                return AIReply(reply.text, "agent",
+                               list(actions) + list(reply.actions or []),
+                               needs_confirmation=True, pending_tool=reply.pending_tool,
+                               pending_args=reply.pending_args)
             actions.extend(reply.actions or [])
             for item in self.core.dm.get_content_plan():
                 one = str(item.get("id"))
@@ -3062,13 +3068,6 @@ class AICore:
         if missing:
             return AIReply(f"Не хватает данных: {', '.join(missing)}. Уточните запрос.",
                            decision.layer)
-        if spec.needs_confirmation and spec.needs_confirmation(decision.args):
-            self.pending = (decision.tool, decision.args)
-            return AIReply(f"План: {decision.tool} с аргументами "
-                           f"{json.dumps(decision.args, ensure_ascii=False)}.\n"
-                           "Подтвердите: «да» или «нет».",
-                           decision.layer, needs_confirmation=True,
-                           pending_tool=decision.tool, pending_args=decision.args)
         return self._execute(decision.tool, decision.args, decision.layer)
 
     def _agent(self) -> "AIAgent":
@@ -3102,6 +3101,17 @@ class AICore:
         spec = self.registry.get(tool)
         if spec is None:
             return AIReply(f"Инструмент {tool} не зарегистрирован.", layer)
+        # Подтверждение — на уровне операции, а не маршрута: агент и любой другой
+        # вызов сюда тоже упираются в вопрос, а не переписывают файлы молча.
+        # "confirm" — ответ «да» на этот вопрос, "gui" — человек сам нажал кнопку.
+        if (spec.needs_confirmation and spec.needs_confirmation(args)
+                and layer not in ("confirm", "gui")):
+            self.pending = (tool, args)
+            return AIReply(f"План: {tool} с аргументами "
+                           f"{json.dumps(args, ensure_ascii=False)}.\n"
+                           "Подтвердите: «да» или «нет».",
+                           layer, needs_confirmation=True,
+                           pending_tool=tool, pending_args=args)
         try:
             outcome = spec.handler(**args) or {}
         except Exception as exc:

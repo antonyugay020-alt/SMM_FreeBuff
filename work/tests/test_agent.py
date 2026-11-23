@@ -511,6 +511,32 @@ ok("после «да» фото обработаны",
    [record.get("processed") for record in dm._data["media_ready"]])
 ai_core.MEDIA_IMAGES = saved_media_dir
 
+# --- агент не обходит подтверждение обработки фото ---
+dm, core, stub = build([
+    '{"action": "tool", "tool": "batch_photo", '
+    '"args": {"media_ids": ["m1", "m2"], "operations": ["compress"]}}',
+    '{"action": "done", "say": "Готово."}'])
+agent_photos = Path(tempfile.mkdtemp(prefix="photos_agent_"))
+for index in (1, 2):
+    file_path = agent_photos / f"q{index}.jpg"
+    Image.new("RGB", (40, 40), (60, 60, 120)).save(file_path)
+    dm._data["media_ready"].append({"id": f"m{index}", "name": file_path.name,
+                                    "type": "image", "path": str(file_path),
+                                    "status": "approved"})
+dm.save()
+ai_core.MEDIA_IMAGES = agent_photos / "out"
+reply = core.handle("приведи фотографии в порядок")
+ok("агент упирается в подтверждение",
+   reply.needs_confirmation and "Подтвердите" in reply.text, reply.text)
+ok("агент не тронул файлы",
+   not any(record.get("processed") for record in dm._data["media_ready"]),
+   dm._data["media_ready"])
+core.handle("да")
+ok("после «да» агентское действие выполнено",
+   all("compress" in (record.get("processed") or []) for record in dm._data["media_ready"]),
+   [record.get("processed") for record in dm._data["media_ready"]])
+ai_core.MEDIA_IMAGES = saved_media_dir
+
 # --- нет плана: отказ понятный, а не «Не хватает данных» ---
 dm, core, stub = build([])
 reply = core.handle("напиши подпись к первому посту")
