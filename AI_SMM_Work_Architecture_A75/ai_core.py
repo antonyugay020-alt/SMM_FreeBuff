@@ -420,6 +420,7 @@ def _shorten_caption(text: str, limit: int = CAPTION_LIMIT) -> str:
     return (head or text[:limit - 1]) + "…"
 
 MAX_ISSUES = 15
+REPORT_ITEMS = 8
 NOOP_UNDO = {"op": "noop"}
 
 # Photo processing (batch_photo): операции и их подписи для отчёта
@@ -941,6 +942,58 @@ class AITools:
                 "effect": {"checked": len(plan), "issues": len(issues),
                            "by_kind": by_kind,
                            "ids": [issue["id"] for issue in issues]},
+                "undo": NOOP_UNDO}
+
+    def plan_report(self) -> Dict[str, Any]:
+        """Отчёт по плану без модели: сколько позиций, на какие даты, где нет подписи и ТЗ."""
+        plan = self.dm.get_content_plan()
+        if not plan:
+            return {"summary": "Отчёт по плану: позиций нет — план пуст. "
+                               "Скажите «создай контент-план на 10 постов».",
+                    "effect": {"items": 0, "without_caption": 0, "without_task": 0},
+                    "undo": NOOP_UNDO}
+
+        def day(item: Dict[str, Any]) -> Optional[datetime]:
+            try:
+                return datetime.strptime(str(item.get("date") or "").strip(), "%d.%m.%Y")
+            except ValueError:
+                return None
+
+        def label(item: Dict[str, Any]) -> str:
+            return f"{item.get('date') or 'без даты'} «{item.get('topic') or 'без темы'}»"
+
+        def listing(title: str, missing: List[Dict[str, Any]]) -> str:
+            if not missing:
+                return f"{title}: нет — всё на месте."
+            shown = ", ".join(label(item) for item in missing[:REPORT_ITEMS])
+            tail = (f" … и ещё {len(missing) - REPORT_ITEMS}"
+                    if len(missing) > REPORT_ITEMS else "")
+            return f"{title}: {len(missing)} из {len(plan)} — {shown}{tail}."
+
+        dated = sorted((item for item in plan if day(item)), key=day)
+        undated = [item for item in plan if not day(item)]
+        ordered = dated + undated
+        by_date: Dict[str, int] = {}
+        for item in dated:
+            key = str(item.get("date")).strip()
+            by_date[key] = by_date.get(key, 0) + 1
+        no_caption = [item for item in ordered
+                      if not str(item.get("caption") or "").strip()]
+        no_task = [item for item in ordered if not item.get("shooting_task_id")]
+        lines = [f"Отчёт по плану: позиций {len(plan)}, с датой {len(dated)}, "
+                 f"без даты {len(undated)}."]
+        if by_date:
+            lines.append("Даты: " + ", ".join(f"{key} — {count}"
+                                              for key, count in by_date.items()) + ".")
+        if undated:
+            lines.append("Без даты: " + ", ".join(f"«{item.get('topic') or 'без темы'}»"
+                                                  for item in undated[:REPORT_ITEMS]) + ".")
+        lines.append(listing("Без подписи", no_caption))
+        lines.append(listing("Без ТЗ", no_task))
+        return {"summary": "\n".join(lines),
+                "effect": {"items": len(plan), "dated": len(dated),
+                           "without_caption": len(no_caption), "without_task": len(no_task),
+                           "dates": list(by_date)},
                 "undo": NOOP_UNDO}
 
     def analyze_performance(self, period_days: int = 30) -> Dict[str, Any]:
@@ -2607,6 +2660,11 @@ class AIRouter:
                                      "удалять нечего.")
             return RouteDecision("delete_record",
                                  {"section": section, "item_id": item_id}, "rules")
+        # «сделай отчёт по плану» — сводка по плану без модели, а не проверка правописания
+        if re.search(r"(?:отч[её]т|сводк\w*|статистик\w*).{0,25}(?:контент-?\s*)?план\w*"
+                     r"|(?:сделай|собери|подготовь|покажи|выведи|дай).{0,15}отч[её]т\s*"
+                     r"(?:по|о|об)\s+(?:контент-?\s*)?план\w*", low):
+            return RouteDecision("plan_report", {}, "rules")
         if re.search(r"(проверь|проверить|проверка|все ли).{0,25}(план|публикац|позиц|пост|подпис)"
                      r"|(план|публикац|пост|подпис).{0,20}провер", low):
             return RouteDecision("validate_plan", {}, "rules")
@@ -3304,6 +3362,9 @@ class AICore:
                                         {}, self.tools.sync_plan_events))
         self.registry.register(ToolSpec("validate_plan", "проверка плана: даты, подписи, ТЗ",
                                         {}, self.tools.validate_plan, read_only=True))
+        self.registry.register(ToolSpec("plan_report",
+                                        "отчёт по плану: сколько позиций, даты, без подписи и ТЗ",
+                                        {}, self.tools.plan_report, read_only=True))
         self.registry.register(ToolSpec("analyze_performance",
                                         "сводка по метрикам: охват, вовлечённость, топ постов",
                                         {"period_days": int},

@@ -775,6 +775,53 @@ ok("без постов — вопрос, а не выдумка",
    decision is not None and not decision.tool and "пост" in (decision.clarify or "").lower(),
    getattr(decision, "clarify", None))
 
+# --- «сделай отчёт по плану» — счёт по плану без модели ---
+dm, core, stub = seeded_plan()
+decision = core.router._rules("сделай отчёт по плану")
+ok("«сделай отчёт по плану» — plan_report",
+   decision is not None and decision.tool == "plan_report", getattr(decision, "tool", None))
+reply = core.handle("сделай отчёт по плану")
+ok("отчёт называет количество позиций и даты",
+   "позиций 3" in reply.text and "01.04.2027 — 1" in reply.text
+   and "03.04.2027 — 1" in reply.text, reply.text)
+ok("отчёт считает позиции без подписи и без ТЗ",
+   "Без подписи: 3 из 3" in reply.text and "Без ТЗ: 3 из 3" in reply.text, reply.text)
+ok("«сделай отчёт по плану» не дёргает модель", not stub.calls, stub.calls)
+ok("отчёт ничего не меняет в проекте",
+   len(dm.get_content_plan()) == 3 and not core.journal.list(10),
+   (len(dm.get_content_plan()), core.journal.list(10)))
+
+dm, core, stub = build([])
+done_id = dm.add_content_plan_item({"topic": "С подписью и ТЗ", "rubric": "Польза",
+                                    "format": "Пост", "date": "01.04.2027",
+                                    "caption": "Готовая подпись"})
+dm.create_shooting_task_from_content_plan(done_id)
+dm.add_content_plan_item({"topic": "Без подписи", "rubric": "Польза", "format": "Пост",
+                          "date": "03.04.2027"})
+dm.add_content_plan_item({"topic": "Без даты", "rubric": "Польза", "format": "Пост",
+                          "date": ""})
+reply = core.handle("сделай отчёт по плану")
+ok("отчёт делит позиции на датированные и без даты",
+   "позиций 3, с датой 2, без даты 1" in reply.text, reply.text)
+ok("отчёт называет позиции без подписи по дате и теме",
+   "Без подписи: 2 из 3 — 03.04.2027 «Без подписи», без даты «Без даты»" in reply.text,
+   reply.text)
+ok("отчёт называет позиции без ТЗ и не задевает готовую",
+   "Без ТЗ: 2 из 3" in reply.text and "С подписью и ТЗ" not in reply.text,
+   reply.text)
+ok("отчёт не дёргает модель и не пишет в журнал",
+   not stub.calls and not core.journal.list(10), (stub.calls, core.journal.list(10)))
+
+dm, core, stub = build([])
+reply = core.handle("сделай отчёт по плану")
+ok("отчёт по пустому плану — честный ответ, а не нули без слов",
+   "план пуст" in reply.text, reply.text)
+
+for text in ("сделай отчёт по стратегии", "собери отчёт по метрикам"):
+    decision = core.router._rules(text)
+    ok(f"«{text}» — не отчёт по плану",
+       decision is None or decision.tool != "plan_report", getattr(decision, "tool", None))
+
 # --- будущих позиций нет: двигаем последнюю, а не молчим ---
 dm, core, stub = build([])
 dm.add_content_plan_item({"topic": "Старый", "rubric": "Польза", "format": "Пост",
