@@ -846,6 +846,20 @@ class AITools:
                 "effect": {"id": record["id"]},
                 "undo": {"op": "restore_section", "section": section, "data": before}}
 
+    def edit_would_change(self, args: Dict[str, Any]) -> bool:
+        """Будет ли правка настоящей: те же значения или чужая запись — спрашивать не о чем."""
+        records = self._records(str(args.get("section") or ""))
+        if records is None:
+            return False
+        target = next((row for row in records
+                       if str(row.get("id")) == str(args.get("item_id") or "")), None)
+        if target is None:
+            return False
+        changed = {key: value for key, value in (args.get("fields") or {}).items()
+                   if key != "id"}
+        return any(str(target.get(key) if target.get(key) is not None else "") != str(value)
+                   for key, value in changed.items())
+
     def edit_record(self, section: str = "", item_id: str = "",
                     fields: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         records = self._records(section)
@@ -3543,7 +3557,8 @@ class AICore:
                                         {"section": str, "fields": dict}, self.tools.add_record))
         self.registry.register(ToolSpec("edit_record", "изменить запись плана/календаря/ТЗ",
                                         {"section": str, "item_id": str, "fields": dict},
-                                        self.tools.edit_record))
+                                        self.tools.edit_record,
+                                        needs_confirmation=lambda a: self.tools.edit_would_change(a)))
         self.registry.register(ToolSpec("delete_record", "удалить запись плана/календаря/ТЗ",
                                         {"section": str, "item_id": str}, self.tools.delete_record,
                                         needs_confirmation=lambda a: True))
@@ -3745,6 +3760,10 @@ class AICore:
 
     CONFIRM_PLACES = {"content_plan": "контент-плана", "calendar_events": "календаря",
                       "shooting_tasks": "ТЗ", "post_metrics": "метрик"}
+    FIELD_NAMES = {"date": "дата", "time": "время", "topic": "тема", "title": "название",
+                   "caption": "подпись", "text": "текст", "status": "статус",
+                   "rubric": "рубрика", "format": "формат", "description": "описание",
+                   "link": "связь", "deadline": "срок"}
 
     def _confirm_text(self, tool: str, args: Dict[str, Any]) -> str:
         """Что именно удаляем — словами: тема и дата, а не id и сырые аргументы."""
@@ -3777,6 +3796,24 @@ class AICore:
                 return (f"Убрать «{name}» из списка «{folder}»?" if name
                         else f"Убрать материал из списка «{folder}»?")
             return "Убрать материал из списка?"
+        if tool == "edit_record":
+            section = str(args.get("section") or "")
+            place = self.CONFIRM_PLACES.get(section, "списка")
+            item_id = str(args.get("item_id") or "")
+            item = next((row for row in (self.tools._records(section) or [])
+                         if str(row.get("id")) == item_id), None)
+            title = str((item or {}).get("topic") or (item or {}).get("title") or "").strip()
+            date = str((item or {}).get("date") or "").strip()
+            what = " ".join(part for part in (f"«{title}»" if title else "",
+                                              f"от {date}" if date else "") if part)
+            changes = []
+            for key, value in (args.get("fields") or {}).items():
+                if key == "id":
+                    continue
+                shown = str(value if value is not None else "").strip()
+                changes.append(f"{self.FIELD_NAMES.get(key, key)} → {shown or 'пусто'}")
+            head = f"Изменить {what} в {place}" if what else f"Изменить запись в {place}"
+            return f"{head}: {', '.join(changes) or 'поля'}?"
         spec = self.registry.get(tool)
         return f"Выполнить «{spec.description if spec is not None else tool}»?"
 

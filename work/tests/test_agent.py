@@ -659,6 +659,10 @@ new_date = str((decision.args or {}).get("fields", {}).get("date") or "")
 ok("без номера берётся ближайшая будущая позиция, а не последняя",
    decision.args.get("item_id") == plan_ids[0], getattr(decision, "args", None))
 reply = core.handle("измени дату поста на 5 декабря")
+ok("смена даты сначала спрашивает «да/нет»", reply.needs_confirmation, reply.text)
+ok("до «да» дата прежняя",
+   str(dm.get_content_plan()[0]["date"]) == "01.04.2027", dm.get_content_plan()[0])
+reply = core.handle("да")
 dates = [str(item.get("date")) for item in dm.get_content_plan()]
 ok("дата изменена у одной позиции, остальные не тронуты",
    dates == [new_date, "02.04.2027", "03.04.2027"], dates)
@@ -679,6 +683,12 @@ ok("«перенеси пост на завтра» — смена даты, а 
 dm, core, stub = seeded_plan()
 move_ids = [str(item["id"]) for item in dm.get_content_plan()]
 reply = core.handle("перенеси пост на завтра")
+ok("перенос даты тоже спрашивает «да/нет»", reply.needs_confirmation, reply.text)
+ok("до «да» даты прежние",
+   [str(item.get("date")) for item in dm.get_content_plan()]
+   == ["01.04.2027", "02.04.2027", "03.04.2027"],
+   [item.get("date") for item in dm.get_content_plan()])
+reply = core.handle("да")
 dates = [str(item.get("date")) for item in dm.get_content_plan()]
 ok("завтрашняя дата встала в ближайшую позицию",
    dates == [tomorrow, "02.04.2027", "03.04.2027"], dates)
@@ -707,7 +717,8 @@ ok("полная дата дд.мм.гггг не превращается в в
 ok("полная дата двигает ближайшую будущую позицию",
    decision is not None and decision.args.get("item_id") == full_ids[0],
    getattr(decision, "args", None))
-reply = core.handle("перенеси пост на 05.12.2026")
+core.handle("перенеси пост на 05.12.2026")
+reply = core.handle("да")
 dates = [str(item.get("date")) for item in dm.get_content_plan()]
 ok("дата дд.мм.гггг записана в позицию",
    dates == ["05.12.2026", "02.04.2027", "03.04.2027"], dates)
@@ -734,11 +745,43 @@ ok("та же дата — всё равно edit_record по нужной по�
    decision is not None and decision.tool == "edit_record",
    getattr(decision, "tool", None))
 reply = core.handle("измени дату поста на 02.04.2027")
+ok("та же дата — лишнего вопроса нет", not reply.needs_confirmation, reply.text)
 ok("та же дата — ответ «менять нечего», а не «Обновил»",
    "Менять нечего" in reply.text and "Обновил" not in reply.text, reply.text)
 ok("даты после такой фразы не изменились",
    [str(item.get("date")) for item in dm.get_content_plan()] == before_dates,
    dm.get_content_plan())
+
+# --- правка записи: вопрос до записи, «нет» ничего не меняет ---
+dm, core, stub = seeded_plan()
+target_id = str(dm.get_content_plan()[0]["id"])
+dm._data["content_plan"][0]["caption"] = "Старая подпись"
+dm.save()
+EDIT = {"section": "content_plan", "item_id": target_id,
+        "fields": {"caption": "Новая подпись"}}
+reply = core._execute("edit_record", EDIT, "rules")
+ok("правка записи сначала спрашивает «да/нет»", reply.needs_confirmation, reply.text)
+ok("в вопросе запись, поле и новое значение словами",
+   "Пост 1" in reply.text and "подпись" in reply.text
+   and "Новая подпись" in reply.text, reply.text)
+ok("до «да» подпись прежняя",
+   dm.get_content_plan()[0]["caption"] == "Старая подпись", dm.get_content_plan()[0])
+reply = core.handle("нет")
+ok("«нет» оставляет текст прежним и снимает вопрос",
+   dm.get_content_plan()[0]["caption"] == "Старая подпись"
+   and not reply.needs_confirmation and core.pending is None,
+   (dm.get_content_plan()[0], reply.text))
+core._execute("edit_record", EDIT, "rules")
+reply = core.handle("да")
+ok("после «да» правка записана и попала в журнал",
+   dm.get_content_plan()[0]["caption"] == "Новая подпись"
+   and any(entry["tool"] == "edit_record" for entry in core.journal.list(5)),
+   (dm.get_content_plan()[0], [entry["tool"] for entry in core.journal.list(5)]))
+reply = core.run_tool("edit_record", section="content_plan", item_id=target_id,
+                      fields={"date": "06.12.2027"})
+ok("путь окна пишет без второго вопроса",
+   not reply.needs_confirmation
+   and str(dm.get_content_plan()[0]["date"]) == "06.12.2027", reply.text)
 
 # --- «что писать завтра» и «сделай календарь на месяц» ---
 dm, core, stub = build([])
