@@ -6,7 +6,7 @@ from pathlib import Path
 APP = Path(__file__).resolve().parents[2] / "AI_SMM_Work_Architecture_A75"
 sys.path.insert(0, str(APP))
 
-from ai_core import AGENT_STEPS, AICore, LLMResult
+from ai_core import AGENT_STEPS, AICore, LLMResult, review_badge
 from data_manager import DataManager
 
 
@@ -1058,55 +1058,60 @@ def build_with_editor(script, verdicts):
     return dm, core, stage, editor
 
 
-# --- редактор отдельно от креатора: слабую подпись переписывает ---
+# --- редактор по запросу: одна проверка на все подписи ---
+VERDICTS = json.dumps({"reviews": [
+    {"id": "cp_001", "approved": False,
+     "text": "Свежая обжарка каждое утро. #кофе #пар", "note": "убрал воду"},
+    {"id": "cp_002", "approved": True, "text": "Готовая подпись.", "note": ""}]},
+    ensure_ascii=False)
 dm, core, stub, editor = build_with_editor([
     '{"action": "tool", "tool": "review_captions", "args": {}}',
-    '{"action": "done", "say": "Редактор посмотрел подписи."}'],
-    [json.dumps({"approved": False,
-                 "text": "Свежая обжарка каждое утро. #кофе #пар",
-                 "note": "убрал воду"}, ensure_ascii=False)])
-item_id = dm.add_content_plan_item({"topic": "Обжарка", "rubric": "Польза", "format": "Пост",
-                                    "date": "01.04.2027",
-                                    "caption": "Мы очень-очень стараемся, заходите к нам почаще."})
+    '{"action": "done", "say": "Редактор посмотрел подписи."}'], [VERDICTS])
+first_id = dm.add_content_plan_item({"topic": "Обжарка", "rubric": "Польза", "format": "Пост",
+                                     "date": "01.04.2027",
+                                     "caption": "Мы очень-очень стараемся, заходите к нам почаще."})
+second_id = dm.add_content_plan_item({"topic": "Отзыв", "rubric": "Личное", "format": "Пост",
+                                      "date": "02.04.2027", "caption": "Готовая подпись."})
 reply = core.handle("проверь подписи редактором")
-ok("редактор вызывается шагом агента", len(editor.calls) == 1, len(editor.calls))
+ok("редактор проверяет все подписи одним вызовом", len(editor.calls) == 1, len(editor.calls))
+ok("в одном запросе обе подписи", "cp_002" in editor.calls[0][1], editor.calls[0][1][:200])
 ok("слабую подпись редактор переписал",
-   str(dm.get_content_plan_item(item_id)["caption"]).startswith("Свежая обжарка"),
-   dm.get_content_plan_item(item_id).get("caption"))
-ok("вердикт редактора сохранён у позиции",
-   dm.get_content_plan_item(item_id).get("caption_review", {}).get("model") == "editor-stub",
-   dm.get_content_plan_item(item_id).get("caption_review"))
+   str(dm.get_content_plan_item(first_id)["caption"]).startswith("Свежая обжарка"),
+   dm.get_content_plan_item(first_id).get("caption"))
+ok("сильную подпись редактор не тронул",
+   dm.get_content_plan_item(second_id)["caption"] == "Готовая подпись.",
+   dm.get_content_plan_item(second_id).get("caption"))
+ok("вердикты сохранены у обеих позиций",
+   dm.get_content_plan_item(first_id).get("caption_review", {}).get("approved") is False
+   and dm.get_content_plan_item(second_id).get("caption_review", {}).get("approved") is True,
+   (dm.get_content_plan_item(first_id).get("caption_review"),
+    dm.get_content_plan_item(second_id).get("caption_review")))
+ok("в карточке видно, что редактор переписал и почему",
+   review_badge(dm.get_content_plan_item(first_id))
+   == "Редактор (editor-stub): переписал — убрал воду",
+   review_badge(dm.get_content_plan_item(first_id)))
+ok("в карточке видно одобрение",
+   review_badge(dm.get_content_plan_item(second_id)) == "Редактор (editor-stub): одобрил",
+   review_badge(dm.get_content_plan_item(second_id)))
+ok("у непроверенной подписи бейджа нет", review_badge({}) == "", review_badge({}))
 ok("правка редактора — отдельное действие с откатом",
    any(entry["tool"] == "review_captions" for entry in core.journal.list(10)),
    [entry["tool"] for entry in core.journal.list(10)])
 core.undo(reply.actions[0]["id"])
-ok("откат возвращает прежнюю подпись",
-   dm.get_content_plan_item(item_id)["caption"] == "Мы очень-очень стараемся, заходите к нам почаще.",
-   dm.get_content_plan_item(item_id).get("caption"))
+ok("откат возвращает обе подписи",
+   dm.get_content_plan_item(first_id)["caption"] == "Мы очень-очень стараемся, заходите к нам почаще."
+   and dm.get_content_plan_item(second_id)["caption"] == "Готовая подпись.",
+   (dm.get_content_plan_item(first_id).get("caption"),
+    dm.get_content_plan_item(second_id).get("caption")))
 
-# --- одобренная подпись не меняется, но вердикт записан ---
-dm, core, stub, editor = build_with_editor([
-    '{"action": "tool", "tool": "review_captions", "args": {}}',
-    '{"action": "done", "say": "Подписи одобрены."}'],
-    [json.dumps({"approved": True, "text": "другой текст", "note": "ок"},
-                ensure_ascii=False)])
-item_id = dm.add_content_plan_item({"topic": "Обжарка", "rubric": "Польза", "format": "Пост",
-                                    "date": "01.04.2027", "caption": "Готовая подпись."})
-core.handle("проверь подписи редактором")
-ok("одобренная подпись не переписана",
-   dm.get_content_plan_item(item_id)["caption"] == "Готовая подпись.",
-   dm.get_content_plan_item(item_id).get("caption"))
-ok("одобрение записано в позицию",
-   dm.get_content_plan_item(item_id).get("caption_review", {}).get("approved") is True,
-   dm.get_content_plan_item(item_id).get("caption_review"))
-
-# --- непроверенная подпись не даёт «готово», если редактор настроен ---
+# --- редактор не входит в пробелы автоматически ---
 dm, core, stub, editor = build_with_editor([], [])
 item_id = dm.add_content_plan_item({"topic": "Обжарка", "rubric": "Польза", "format": "Пост",
                                     "date": "01.04.2027", "caption": "Готовая подпись."})
 gaps = core._agent()._plan_gaps([item_id])
-ok("непроверенная подпись — повод для шага редактора",
-   ("review_captions", item_id) in gaps, gaps)
+ok("непроверенная подпись не мешает «готово»",
+   not any(tool == "review_captions" for tool, _ in gaps), gaps)
+ok("редактор не вызывается без запроса", len(editor.calls) == 0, len(editor.calls))
 
 # --- без редактора — честный ответ, а не тишина ---
 dm, core, stub = build([])

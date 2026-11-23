@@ -428,6 +428,19 @@ def _shorten_caption(text: str, limit: int = CAPTION_LIMIT) -> str:
     head = text[:limit - 1].rsplit(" ", 1)[0].rstrip(" ,;:—-\u00ab")
     return (head or text[:limit - 1]) + "…"
 
+def review_badge(item: Dict[str, Any]) -> str:
+    """Что сказал редактор о подписи: одобрил, переписал или пусто, если не проверял."""
+    verdict = item.get("caption_review") if isinstance(item, dict) else None
+    if not isinstance(verdict, dict) or not verdict:
+        return ""
+    model = str(verdict.get("model") or "").strip()
+    who = f" ({model})" if model else ""
+    if verdict.get("approved"):
+        return f"Редактор{who}: одобрил"
+    note = str(verdict.get("note") or "").strip()
+    return f"Редактор{who}: переписал" + (f" — {note}" if note else "")
+
+
 MAX_ISSUES = 15
 REPORT_ITEMS = 8
 NOOP_UNDO = {"op": "noop"}
@@ -955,17 +968,16 @@ class AITools:
                                "но текст никто не проверит.",
                     "effect": {}, "undo": {}}
 
+        # один вызов редактора на все подписи, а не по вызову на каждую
+        verdicts = self.router.review_all_captions(targets) or []
+        by_id = {one["id"]: one for one in verdicts}
         texts: Dict[str, str] = {}
         reviews: Dict[str, Dict[str, Any]] = {}
         approved = rewritten = 0
-        failed = 0
         for item in targets:
             one = str(item.get("id"))
-            verdict = self.router.review_caption(
-                str(item.get("caption") or ""),
-                f"тема: {item.get('topic')}; формат: {item.get('format')}")
+            verdict = by_id.get(one)
             if verdict is None:
-                failed += 1
                 continue
             reviews[one] = {"model": verdict.get("model") or "",
                             "approved": bool(verdict["approved"]),
@@ -975,8 +987,9 @@ class AITools:
             else:
                 texts[one] = _shorten_caption(verdict["text"])
                 rewritten += 1
+        failed = len(targets) - len(reviews)
         if not reviews:
-            return {"summary": (f"Редактор не ответил ни по одной из {len(targets)} подписей: "
+            return {"summary": (f"Редактор не ответил по {len(targets)} подписям за один вызов: "
                                 "проверьте модель-редактора и ключ облака."),
                     "effect": {}, "undo": {}}
 
@@ -2423,8 +2436,6 @@ class AIAgent:
                 continue
             if not str(item.get("caption") or "").strip():
                 gaps.append(("write_captions", str(one)))
-            elif not item.get("caption_review") and self.core.editor_available():
-                gaps.append(("review_captions", str(one)))
             if not item.get("shooting_task_id"):
                 gaps.append(("create_shooting_task", str(one)))
         return gaps
@@ -2434,8 +2445,6 @@ class AIAgent:
         words = []
         if any(tool == "write_captions" for tool, _ in gaps):
             words.append("подписей")
-        if any(tool == "review_captions" for tool, _ in gaps):
-            words.append("проверки редактора")
         if any(tool == "create_shooting_task" for tool, _ in gaps):
             words.append("ТЗ на съёмку")
         return " и ".join(words)
@@ -2871,8 +2880,8 @@ class AIRouter:
             cleaned[arg_name] = value
         return RouteDecision(decision.tool, cleaned, decision.layer, decision.confidence)
 
-    def review_caption(self, text: str, brief: str = "") -> Optional[Dict[str, Any]]:
-        """Редактор оценивает подпись: {approved, text, note}. None — редактора нет или он не ответил."""
+    def review_all_captions(self, items: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
+        """Один вызов редактора на все подписи: [{id, approved, text, note}] или None."""
         provider = getattr(self, "editor", None)
         if provider is None or not provider.available():
             return None
@@ -2880,26 +2889,43 @@ class AIRouter:
                 and not self.budget.can_spend():
             return None
         profile = (self.profile_getter() if hasattr(self, "profile_getter") else {}) or {}
-        system = ("Ты редактор SMM-текста. Проверь подпись: тон бренда, один CTA, 3–5 хэштегов, "
-                  "нет воды и повторов, не длиннее 400 символов. Верни ТОЛЬКО JSON: "
-                  '{"approved": true|false, "text": "<итоговая подпись>", '
-                  '"note": "<что исправил, коротко>"}. '
+        rows = []
+        for item in items:
+            rows.append(f"id: {item.get('id')} | тема: {item.get('topic')} | "
+                        f"формат: {item.get('format')}\n{item.get('caption')}")
+        system = ("Ты редактор SMM-текста. Проверь каждую подпись: тон бренда, один CTA, "
+                  "3–5 хэштегов, нет воды и повторов, не длиннее 400 символов. "
+                  'Верни ТОЛЬКО JSON: {"reviews": [{"id": "...", "approved": true|false, '
+                  '"text": "<итоговая подпись>", "note": "<что исправил, коротко>"}]}. '
                   "Если подпись в порядке — approved=true и text = исходная подпись без правок. "
-                  "Пиши по-русски.")
+                  "Верни по одному элементу на каждый id без пропусков. Пиши по-русски.")
         if profile.get("tone_of_voice"):
             system += f" Тон голоса бренда: {profile['tone_of_voice']}."
-        result = provider.chat(system, f"Бриф: {brief or '—'}\nПодпись:\n{text}",
-                               temperature=0.2, max_tokens=700)
+        result = provider.chat(system, "Подписи:\n\n" + "\n\n".join(rows),
+                               temperature=0.2, max_tokens=200 + 250 * len(items))
         if self.budget is not None:
             self.budget.record(self.project_id, "review", result)
         if result.error or not result.text:
             return None
+        known = {str(item.get("id")): str(item.get("caption") or "") for item in items}
         for data in _json_candidates(result.text):
-            if isinstance(data, dict) and "approved" in data:
-                return {"approved": bool(data.get("approved")),
-                        "text": str(data.get("text") or "").strip() or text,
-                        "note": str(data.get("note") or "").strip(),
-                        "model": str(getattr(provider, "model", "") or "")}
+            reviews = data.get("reviews") if isinstance(data, dict) else None
+            if not isinstance(reviews, list):
+                continue
+            out = []
+            for row in reviews:
+                if not isinstance(row, dict):
+                    continue
+                one = str(row.get("id") or "")
+                if one not in known:
+                    continue
+                out.append({"id": one,
+                            "approved": bool(row.get("approved")),
+                            "text": str(row.get("text") or "").strip() or known[one],
+                            "note": str(row.get("note") or "").strip(),
+                            "model": str(getattr(provider, "model", "") or "")})
+            if out:
+                return out
         return None
 
     def _safety(self, text: str) -> Optional[RouteDecision]:
@@ -3516,7 +3542,8 @@ class AICore:
         self.registry.register(ToolSpec("write_captions", "подпись, хэштеги, CTA",
                                         {"plan_id": str}, self.tools.write_captions))
         self.registry.register(ToolSpec("review_captions",
-                                        "редактор проверяет подписи и переписывает слабые",
+                                        "редактор по запросу: одна проверка всех подписей, "
+                                        "слабые переписывает",
                                         {"plan_id": str}, self.tools.review_captions))
         self.registry.register(ToolSpec("import_media", "импорт файлов в проект",
                                         {"paths": list, "zone": str}, self.tools.import_media))

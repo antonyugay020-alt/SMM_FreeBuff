@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
 from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtGui import QIcon
 
-from ai_core import CAPTION_LIMIT, NO_DATE, collect_plan_issues
+from ai_core import CAPTION_LIMIT, NO_DATE, collect_plan_issues, review_badge
 from gui_sections.section_base import DataSection
 from gui_theme import TEXT, MUTED, TEAL
 
@@ -202,7 +202,15 @@ class PostDialog(QDialog):
         self.caption.setPlainText(str(item.get("caption") or ""))
         self.caption.textChanged.connect(self._update_counter)
         layout.addWidget(self.caption)
+        self._caption_saved = str(item.get("caption") or "")
+        verdict = item.get("caption_review")
+        self._review_verdict = verdict if isinstance(verdict, dict) else {}
+        self.review = QLabel("")
+        self.review.setWordWrap(True)
+        layout.addWidget(self.review)
+        self.caption.textChanged.connect(self._update_review)
         self._update_counter()
+        self._update_review()
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Save).setText("Сохранить")
@@ -255,6 +263,20 @@ class PostDialog(QDialog):
         color = "#f87171" if length > CAPTION_LIMIT else MUTED
         self.counter.setText(f"{length}/{CAPTION_LIMIT}")
         self.counter.setStyleSheet(f"color: {color}; font-size: 11px;")
+
+    def _update_review(self) -> None:
+        """Вердикт редактора в карточке: одобрил/переписал, а после правки — что он устарел."""
+        if not self._review_verdict:
+            self.review.setText("")
+            self.review.setVisible(False)
+            return
+        if self.caption.toPlainText().strip() != self._caption_saved.strip():
+            self.review.setText("Редактор: подпись изменена после проверки — вердикт устарел")
+            self.review.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        else:
+            self.review.setText(review_badge({"caption_review": self._review_verdict}))
+            self.review.setStyleSheet(f"color: {TEAL}; font-size: 11px;")
+        self.review.setVisible(True)
 
     def _on_generate(self) -> None:
         if self._generate is None:
