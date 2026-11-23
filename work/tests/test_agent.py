@@ -58,6 +58,26 @@ class Stage:
         return LLMResult(text=text, provider=self.name, model="stub")
 
 
+class Editor:
+    """Модель-редактор: вердикты по подписям, без шагов агента."""
+
+    name = "cloud"
+    model = "editor-stub"
+
+    def __init__(self, verdicts):
+        self.verdicts = list(verdicts)
+        self.calls = []
+
+    def available(self):
+        return True
+
+    def chat(self, system, user, temperature=0.2, max_tokens=2048):
+        self.calls.append((system, user))
+        text = (self.verdicts.pop(0) if self.verdicts
+                else json.dumps({"approved": True, "text": "", "note": ""}, ensure_ascii=False))
+        return LLMResult(text=text, provider=self.name, model=self.model)
+
+
 class Dead:
     """Провайдер, которого нет: поведение без модели не зависит от машины."""
 
@@ -1026,5 +1046,76 @@ reply = core.handle("журнал действий")
 ok("журнал решает правило, а не агент",
    stub.agent_calls == 0 and "Журнал" in reply.text, (stub.agent_calls, reply.text))
 ok("журнал не создал пост", not dm.get_content_plan(), dm.get_content_plan())
+
+def build_with_editor(script, verdicts):
+    """Креатор — Stage, редактор — облачная заглушка (как «облако» в настройках)."""
+    dm = DataManager("agent", tempfile.mkdtemp(prefix="agent_"))
+    stage = Stage(script)
+    editor = Editor(verdicts)
+    core = AICore(dm, {"monthly_budget_usd": 0},
+                  app_db_path=Path(tempfile.mkdtemp(prefix="agent_db_")) / "app.db",
+                  providers=(stage, editor))
+    return dm, core, stage, editor
+
+
+# --- редактор отдельно от креатора: слабую подпись переписывает ---
+dm, core, stub, editor = build_with_editor([
+    '{"action": "tool", "tool": "review_captions", "args": {}}',
+    '{"action": "done", "say": "Редактор посмотрел подписи."}'],
+    [json.dumps({"approved": False,
+                 "text": "Свежая обжарка каждое утро. #кофе #пар",
+                 "note": "убрал воду"}, ensure_ascii=False)])
+item_id = dm.add_content_plan_item({"topic": "Обжарка", "rubric": "Польза", "format": "Пост",
+                                    "date": "01.04.2027",
+                                    "caption": "Мы очень-очень стараемся, заходите к нам почаще."})
+reply = core.handle("проверь подписи редактором")
+ok("редактор вызывается шагом агента", len(editor.calls) == 1, len(editor.calls))
+ok("слабую подпись редактор переписал",
+   str(dm.get_content_plan_item(item_id)["caption"]).startswith("Свежая обжарка"),
+   dm.get_content_plan_item(item_id).get("caption"))
+ok("вердикт редактора сохранён у позиции",
+   dm.get_content_plan_item(item_id).get("caption_review", {}).get("model") == "editor-stub",
+   dm.get_content_plan_item(item_id).get("caption_review"))
+ok("правка редактора — отдельное действие с откатом",
+   any(entry["tool"] == "review_captions" for entry in core.journal.list(10)),
+   [entry["tool"] for entry in core.journal.list(10)])
+core.undo(reply.actions[0]["id"])
+ok("откат возвращает прежнюю подпись",
+   dm.get_content_plan_item(item_id)["caption"] == "Мы очень-очень стараемся, заходите к нам почаще.",
+   dm.get_content_plan_item(item_id).get("caption"))
+
+# --- одобренная подпись не меняется, но вердикт записан ---
+dm, core, stub, editor = build_with_editor([
+    '{"action": "tool", "tool": "review_captions", "args": {}}',
+    '{"action": "done", "say": "Подписи одобрены."}'],
+    [json.dumps({"approved": True, "text": "другой текст", "note": "ок"},
+                ensure_ascii=False)])
+item_id = dm.add_content_plan_item({"topic": "Обжарка", "rubric": "Польза", "format": "Пост",
+                                    "date": "01.04.2027", "caption": "Готовая подпись."})
+core.handle("проверь подписи редактором")
+ok("одобренная подпись не переписана",
+   dm.get_content_plan_item(item_id)["caption"] == "Готовая подпись.",
+   dm.get_content_plan_item(item_id).get("caption"))
+ok("одобрение записано в позицию",
+   dm.get_content_plan_item(item_id).get("caption_review", {}).get("approved") is True,
+   dm.get_content_plan_item(item_id).get("caption_review"))
+
+# --- непроверенная подпись не даёт «готово», если редактор настроен ---
+dm, core, stub, editor = build_with_editor([], [])
+item_id = dm.add_content_plan_item({"topic": "Обжарка", "rubric": "Польза", "format": "Пост",
+                                    "date": "01.04.2027", "caption": "Готовая подпись."})
+gaps = core._agent()._plan_gaps([item_id])
+ok("непроверенная подпись — повод для шага редактора",
+   ("review_captions", item_id) in gaps, gaps)
+
+# --- без редактора — честный ответ, а не тишина ---
+dm, core, stub = build([])
+item_id = dm.add_content_plan_item({"topic": "Обжарка", "rubric": "Польза", "format": "Пост",
+                                    "date": "01.04.2027", "caption": "Готовая подпись."})
+reply = core._execute("review_captions", {}, "rules")
+ok("без редактора сказано, что его нет", "Редактор не настроен" in reply.text, reply.text)
+ok("без редактора подпись не тронута",
+   dm.get_content_plan_item(item_id)["caption"] == "Готовая подпись.",
+   dm.get_content_plan_item(item_id).get("caption"))
 
 print("AGENT_DONE")

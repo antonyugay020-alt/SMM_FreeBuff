@@ -17,6 +17,8 @@ DEFAULTS: Dict[str, Any] = {
     "local_model": "qwen3:8b",
     "cloud_model": "claude-haiku-4.5",
     "cloud_endpoint": "https://openrouter.ai/api/v1",
+    "editor_provider": "cloud",       # cloud | ollama | none — кто проверяет текст
+    "editor_model": "",              # пусто — облачная модель из cloud_model
     "monthly_budget_usd": 30,
     "budget_used_usd": 0.0,
     "projects_dir": str(ROOT_DIR / "data" / "projects"),

@@ -81,6 +81,19 @@ class SettingsSection(QWidget):
         self.cloud_endpoint = QLineEdit()
         self.cloud_endpoint.setObjectName("formInput")
         form.addRow("Облачный эндпоинт", self.cloud_endpoint)
+
+        # Редактор отдельно от креатора: пишет одна модель, проверяет другая.
+        self.editor_provider = QComboBox()
+        self.editor_provider.setObjectName("formInput")
+        for label, value in (("Облако", "cloud"), ("Локальная", "ollama"),
+                             ("Без редактора", "none")):
+            self.editor_provider.addItem(label, value)
+        form.addRow("Редактор", self.editor_provider)
+
+        self.editor_model = QLineEdit()
+        self.editor_model.setObjectName("formInput")
+        self.editor_model.setPlaceholderText("например openai/gpt-4o-mini; пусто — облачная модель")
+        form.addRow("Модель-редактор", self.editor_model)
         box.addWidget(models)
 
         # --- budget ---
@@ -348,6 +361,10 @@ class SettingsSection(QWidget):
         self._sync_saved_model()
         self.cloud_model.setText(str(self.settings.get("cloud_model") or ""))
         self.cloud_endpoint.setText(str(self.settings.get("cloud_endpoint") or ""))
+        editor_index = self.editor_provider.findData(
+            str(self.settings.get("editor_provider") or "cloud"))
+        self.editor_provider.setCurrentIndex(max(editor_index, 0))
+        self.editor_model.setText(str(self.settings.get("editor_model") or ""))
         self.budget.setValue(float(self.settings.get("monthly_budget_usd") or 0))
         self.budget_used.setText(f"{float(self.settings.get('budget_used_usd') or 0):.2f} $")
         self.projects_dir.setText(str(self.settings.get("projects_dir") or ""))
@@ -364,6 +381,8 @@ class SettingsSection(QWidget):
             "local_model": self.current_model(),
             "cloud_model": self.cloud_model.text().strip(),
             "cloud_endpoint": self.cloud_endpoint.text().strip(),
+            "editor_provider": self.editor_provider.currentData(),
+            "editor_model": self.editor_model.text().strip(),
             "monthly_budget_usd": float(self.budget.value()),
             "projects_dir": self.projects_dir.text().strip(),
             "backups_dir": self.backups_dir.text().strip(),

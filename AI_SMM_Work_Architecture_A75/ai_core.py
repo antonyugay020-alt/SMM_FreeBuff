@@ -929,6 +929,77 @@ class AITools:
                          "sections": {"content_plan": plan_before,
                                       "calendar_events": events_before}}}
 
+    def review_captions(self, plan_id: str = "") -> Dict[str, Any]:
+        """Редактор проверяет подписи: одобренные помечаются, слабые переписываются с откатом."""
+        plan = self.dm.get_content_plan()
+        if not plan:
+            return {"summary": "В плане нет позиций — проверять нечего.",
+                    "effect": {}, "undo": {}}
+        if plan_id:
+            targets = [item for item in plan if str(item.get("id")) == plan_id]
+            if not targets:
+                return {"summary": f"Позиция {plan_id} не найдена", "effect": {}, "undo": {}}
+            if not str(targets[0].get("caption") or "").strip():
+                return {"summary": f"У позиции {plan_id} нет подписи — редактору нечего проверять.",
+                        "effect": {}, "undo": {}}
+        else:
+            targets = [item for item in plan if str(item.get("caption") or "").strip()]
+            if not targets:
+                return {"summary": "Подписей пока нет — сначала «напиши подписи», "
+                                   "потом редактор их проверит.",
+                        "effect": {}, "undo": {}}
+        editor = getattr(self.router, "editor", None)
+        if editor is None or not editor.available():
+            return {"summary": "Редактор не настроен: выберите «Редактор: облако/локальная» "
+                               "и модель в «Настройках». Креатор без редактора работает, "
+                               "но текст никто не проверит.",
+                    "effect": {}, "undo": {}}
+
+        texts: Dict[str, str] = {}
+        reviews: Dict[str, Dict[str, Any]] = {}
+        approved = rewritten = 0
+        failed = 0
+        for item in targets:
+            one = str(item.get("id"))
+            verdict = self.router.review_caption(
+                str(item.get("caption") or ""),
+                f"тема: {item.get('topic')}; формат: {item.get('format')}")
+            if verdict is None:
+                failed += 1
+                continue
+            reviews[one] = {"model": verdict.get("model") or "",
+                            "approved": bool(verdict["approved"]),
+                            "note": verdict.get("note") or ""}
+            if verdict["approved"]:
+                approved += 1
+            else:
+                texts[one] = _shorten_caption(verdict["text"])
+                rewritten += 1
+        if not reviews:
+            return {"summary": (f"Редактор не ответил ни по одной из {len(targets)} подписей: "
+                                "проверьте модель-редактора и ключ облака."),
+                    "effect": {}, "undo": {}}
+
+        def apply(current: List[Dict[str, Any]]) -> Dict[str, Any]:
+            for item in current:
+                one = str(item.get("id"))
+                if one in reviews:
+                    item["caption_review"] = reviews[one]
+                if one in texts:
+                    item["caption"] = texts[one]
+            return {"effect": {"approved": approved, "rewritten": rewritten,
+                               "failed": failed, "ids": list(reviews)}}
+
+        summary = f"Редактор: одобрено {approved} из {len(targets)}, переписал {rewritten}"
+        if failed:
+            summary += f", без ответа {failed}"
+        if rewritten:
+            summary += ". Новые подписи можно отменить одним откатом"
+        summary += "."
+        out = self._mutate("content_plan", apply)
+        out["summary"] = summary
+        return out
+
     def validate_plan(self) -> Dict[str, Any]:
         """Pre-publish check: plan items without a date, a caption or a shooting task."""
         plan = self.dm.get_content_plan()
@@ -2352,6 +2423,8 @@ class AIAgent:
                 continue
             if not str(item.get("caption") or "").strip():
                 gaps.append(("write_captions", str(one)))
+            elif not item.get("caption_review") and self.core.editor_available():
+                gaps.append(("review_captions", str(one)))
             if not item.get("shooting_task_id"):
                 gaps.append(("create_shooting_task", str(one)))
         return gaps
@@ -2361,6 +2434,8 @@ class AIAgent:
         words = []
         if any(tool == "write_captions" for tool, _ in gaps):
             words.append("подписей")
+        if any(tool == "review_captions" for tool, _ in gaps):
+            words.append("проверки редактора")
         if any(tool == "create_shooting_task" for tool, _ in gaps):
             words.append("ТЗ на съёмку")
         return " и ".join(words)
@@ -2409,6 +2484,7 @@ class AIRouter:
 
     def __init__(self, registry: ToolRegistry, settings, budget: Optional[BudgetGuard],
                  project_id: str, local: Optional[object] = None, cloud: Optional[object] = None,
+                 editor: Optional[object] = None,
                  system_context: Callable[[], str] = lambda: ""):
         self.registry = registry
         self.settings = settings
@@ -2416,6 +2492,8 @@ class AIRouter:
         self.project_id = project_id
         self.local = local
         self.cloud = cloud
+        # Редактор — отдельная модель: пишет креатор, проверяет и правит редактор.
+        self.editor = editor
         self.system_context = system_context
 
     # --- layer 1: rules ---
@@ -2792,6 +2870,37 @@ class AIRouter:
                                      f"Не разобрал аргумент «{arg_name}». Уточни запрос.")
             cleaned[arg_name] = value
         return RouteDecision(decision.tool, cleaned, decision.layer, decision.confidence)
+
+    def review_caption(self, text: str, brief: str = "") -> Optional[Dict[str, Any]]:
+        """Редактор оценивает подпись: {approved, text, note}. None — редактора нет или он не ответил."""
+        provider = getattr(self, "editor", None)
+        if provider is None or not provider.available():
+            return None
+        if getattr(provider, "name", "") == "cloud" and self.budget is not None \
+                and not self.budget.can_spend():
+            return None
+        profile = (self.profile_getter() if hasattr(self, "profile_getter") else {}) or {}
+        system = ("Ты редактор SMM-текста. Проверь подпись: тон бренда, один CTA, 3–5 хэштегов, "
+                  "нет воды и повторов, не длиннее 400 символов. Верни ТОЛЬКО JSON: "
+                  '{"approved": true|false, "text": "<итоговая подпись>", '
+                  '"note": "<что исправил, коротко>"}. '
+                  "Если подпись в порядке — approved=true и text = исходная подпись без правок. "
+                  "Пиши по-русски.")
+        if profile.get("tone_of_voice"):
+            system += f" Тон голоса бренда: {profile['tone_of_voice']}."
+        result = provider.chat(system, f"Бриф: {brief or '—'}\nПодпись:\n{text}",
+                               temperature=0.2, max_tokens=700)
+        if self.budget is not None:
+            self.budget.record(self.project_id, "review", result)
+        if result.error or not result.text:
+            return None
+        for data in _json_candidates(result.text):
+            if isinstance(data, dict) and "approved" in data:
+                return {"approved": bool(data.get("approved")),
+                        "text": str(data.get("text") or "").strip() or text,
+                        "note": str(data.get("note") or "").strip(),
+                        "model": str(getattr(provider, "model", "") or "")}
+        return None
 
     def _safety(self, text: str) -> Optional[RouteDecision]:
         """Операции, которые модели не отдаём: откат, журнал, профиль, публикация, выкладка."""
@@ -3330,13 +3439,14 @@ class AICore:
                 endpoint=(settings.get("cloud_endpoint") if settings else "") or "",
                 model=(settings.get("cloud_model") if settings else "") or "")
         self.cloud = cloud_provider
+        self.editor = self._make_editor(settings, cloud_provider)
 
         self.tools = AITools(dm, self)
         self.tools.app_db_path = Path(app_db_path)
         self.registry = ToolRegistry()
         self._register_tools()
         self.router = AIRouter(self.registry, settings, self.budget, dm.project_id,
-                               self.local, self.cloud,
+                               self.local, self.cloud, editor=self.editor,
                                system_context=self._context_text)
         self.router.media_getter = lambda: (dm.get_media_sources() + dm.get_media_ready()
                                             + dm.get_media_references())
@@ -3405,6 +3515,9 @@ class AICore:
                                         self.tools.analyze_performance, read_only=True))
         self.registry.register(ToolSpec("write_captions", "подпись, хэштеги, CTA",
                                         {"plan_id": str}, self.tools.write_captions))
+        self.registry.register(ToolSpec("review_captions",
+                                        "редактор проверяет подписи и переписывает слабые",
+                                        {"plan_id": str}, self.tools.review_captions))
         self.registry.register(ToolSpec("import_media", "импорт файлов в проект",
                                         {"paths": list, "zone": str}, self.tools.import_media))
         self.registry.register(ToolSpec("batch_photo", "кадрирование, цвет, сжатие",
@@ -3529,6 +3642,24 @@ class AICore:
             return AIReply(f"Не хватает данных: {', '.join(missing)}. Уточните запрос.",
                            decision.layer)
         return self._execute(decision.tool, decision.args, decision.layer)
+
+    def _make_editor(self, settings, cloud_provider):
+        """Редактор — отдельная модель: облачная (по умолчанию) или локальная."""
+        kind = str((settings.get("editor_provider") if settings else "") or "cloud").lower()
+        model = str((settings.get("editor_model") if settings else "") or "").strip()
+        if kind in ("none", "off", "нет", "выкл"):
+            return None
+        if kind == "ollama" or kind == "local":
+            return OllamaProvider(model=model or str(
+                (settings.get("local_model") if settings else "") or "qwen3:8b"))
+        if not model and cloud_provider is not None:
+            return cloud_provider
+        return CloudProvider(
+            endpoint=(settings.get("cloud_endpoint") if settings else "") or "",
+            model=model or str((settings.get("cloud_model") if settings else "") or ""))
+
+    def editor_available(self) -> bool:
+        return self.editor is not None and bool(self.editor.available())
 
     def _agent(self) -> "AIAgent":
         agent = getattr(self, "_agent_instance", None)
