@@ -479,6 +479,33 @@ for text in ("добавь раздел в стратегию про конку�
        decision is not None and not decision.tool and bool(decision.clarify),
        getattr(decision, "clarify", None))
 
+# --- обработка всех фото просит подтверждение ---
+from PIL import Image
+
+dm, core, stub = build([])
+photos = Path(tempfile.mkdtemp(prefix="photos_"))
+for index in (1, 2):
+    file_path = photos / f"p{index}.jpg"
+    Image.new("RGB", (40, 40), (index * 40, 80, 120)).save(file_path)
+    dm._data["media_ready"].append({"id": f"m{index}", "name": file_path.name,
+                                    "type": "image", "path": str(file_path),
+                                    "status": "approved"})
+dm.save()
+reply = core.handle("сожми фото до 1080")
+ok("обработка фото просит подтверждение", reply.needs_confirmation, reply.text)
+ok("до подтверждения файлы не тронуты",
+   not any(record.get("processed") for record in dm._data["media_ready"]),
+   dm._data["media_ready"])
+core.handle("нет")
+ok("отказ ничего не меняет",
+   not any(record.get("processed") for record in dm._data["media_ready"]),
+   dm._data["media_ready"])
+core.handle("сожми фото до 1080")
+core.handle("да")
+ok("после «да» фото обработаны",
+   all("compress" in (record.get("processed") or []) for record in dm._data["media_ready"]),
+   [record.get("processed") for record in dm._data["media_ready"]])
+
 # --- нет плана: отказ понятный, а не «Не хватает данных» ---
 dm, core, stub = build([])
 reply = core.handle("напиши подпись к первому посту")

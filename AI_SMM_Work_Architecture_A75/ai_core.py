@@ -2967,7 +2967,7 @@ class AICore:
         self.registry.register(ToolSpec("batch_photo", "кадрирование, цвет, сжатие",
                                         {"media_ids": list, "operations": list},
                                         self.tools.batch_photo,
-                                        needs_confirmation=lambda a: len(a.get("media_ids") or []) > 10))
+                                        needs_confirmation=lambda a: True))
         self.registry.register(ToolSpec("process_video",
                                         "видео под площадку: 9:16 или 1:1, сжатие",
                                         {"media_ids": list, "platform": str, "paths": list},
