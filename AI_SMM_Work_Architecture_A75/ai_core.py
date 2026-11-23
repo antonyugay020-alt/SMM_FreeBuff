@@ -2469,6 +2469,7 @@ class AIAgent:
             reply = self.core._execute(tool, args, "agent")
             if reply.needs_confirmation:
                 # операция просит подтверждения — останавливаемся и передаём вопрос человеку
+                self.core.resume_task = task
                 return AIReply(reply.text, "agent",
                                list(actions) + list(reply.actions or []),
                                needs_confirmation=True, pending_tool=reply.pending_tool,
@@ -3551,6 +3552,8 @@ class AICore:
         self.dialog: List[str] = []
         # Задача, по которой агент задал вопрос: ответ продолжает её, а не начинает заново.
         self.open_task: str = ""
+        # Агентская задача, прерванная подтверждением: «да» доделывает её до конца.
+        self.resume_task: str = ""
 
     # --- setup ---
     def _register_tools(self) -> None:
@@ -3684,14 +3687,16 @@ class AICore:
             if re.match(r"^(да|yes|ок|ok|подтверждаю)\b", text.lower()):
                 tool, args = self.pending
                 self.pending = None
-                return self._execute(tool, args, "confirm")
+                return self._continue_after_confirm(self._execute(tool, args, "confirm"), tool)
             if re.match(r"^(нет|no|отмена)\b", text.lower()):
                 self.pending = None
+                self.resume_task = ""
                 return AIReply("Отменил, ничего не записал.")
             # Вместо «да»/«нет» пришла другая фраза: операция не выполняется
             # и человеку сказано об этом прямо, а не молча.
             tool = self.pending[0]
             self.pending = None
+            self.resume_task = ""
             spec = self.registry.get(tool)
             what = spec.description if spec is not None else tool
             return AIReply(f"Отменил «{what}»: вместо «да» или «нет» пришла другая фраза. "
@@ -3720,6 +3725,36 @@ class AICore:
         reply = self._run_decision(self.router.route(text))
         self._remember(text, reply.text)
         return reply
+
+    def _continue_after_confirm(self, reply: AIReply, tool: str) -> AIReply:
+        """«Да» в прерванной агентской задаче — доделать её, а не бросить на полпути.
+
+        Подтверждённый шаг уже выполнен; агенту отдаётся та же задача с пометкой,
+        что человек согласился, и он идёт дальше по текущему состоянию проекта.
+        """
+        task = self.resume_task
+        self.resume_task = ""
+        if not task:
+            return reply
+        spec = self.registry.get(tool)
+        what = spec.description if spec is not None else tool
+        note = (f"{task}\nПользователь подтвердил «{what}» — шаг выполнен. "
+                "Продолжай задачу с текущего состояния проекта.")
+        more = self._agent().run(note)
+        if more is None:
+            return reply
+        text = "\n".join(part for part in ((reply.text or "").strip(),
+                                            (more.text or "").strip()) if part)
+        actions = list(reply.actions or []) + list(more.actions or [])
+        self._remember("да", text)
+        if more.needs_confirmation:
+            self.resume_task = note
+        if more.asked:
+            self.open_task = note
+        return AIReply(text, more.layer or "agent", actions,
+                       needs_confirmation=more.needs_confirmation,
+                       pending_tool=more.pending_tool, pending_args=more.pending_args,
+                       asked=more.asked)
 
     def _remember(self, user: str, answer: str) -> None:
         """Пара реплик в контекст модели: шесть последних пар, без бесконечного роста."""

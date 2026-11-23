@@ -134,6 +134,26 @@ ok("подписи у всех постов", all(str(item.get("caption") or "")
 tools = [entry["tool"] for entry in core.journal.list(20)]
 ok("шаги в журнале", {"create_strategy", "create_content_plan", "write_captions"} <= set(tools),
    tools)
+ok("после «да» задача дошла до проверки сама, без новой фразы",
+   "план проверен" in reply.text and not stub.script, (reply.text, stub.script))
+ok("продолжение осталось агентским ответом", reply.layer == "agent", reply.layer)
+
+# --- «нет» на пачку подписей не запускает продолжение ---
+dm, core, stub = build([
+    '{"action": "tool", "tool": "create_content_plan", "args": {"count": 2}}',
+    '{"action": "tool", "tool": "write_captions", "args": {}}',
+])
+reply = core.handle("подготовь контент")
+ok("пачка подписей ждёт ответа", reply.needs_confirmation, reply.text)
+ok("прерванная задача запомнена", core.resume_task != "", core.resume_task)
+calls_before = len(stub.calls)
+reply = core.handle("нет")
+ok("«нет» не продолжает задачу и не пишет подписи",
+   core.resume_task == ""
+   and not any(str(item.get("caption") or "").strip() for item in dm.get_content_plan()),
+   (core.resume_task, reply.text))
+ok("«нет» не зовёт модель ещё раз", len(stub.calls) == calls_before,
+   stub.calls[calls_before:])
 ok("шаг агента просит JSON у модели", "json" in stub.formats, stub.formats)
 
 # --- публикацию агент не трогает ---
@@ -293,15 +313,19 @@ ok("модели сказано, что задача не закончена",
    stub.calls[-3:-1])
 reply = core.handle("да")
 plan = dm.get_content_plan()
-ok("после плана агент дописал подписи",
+ok("после «да» агент дописал подписи",
    plan and all(str(item.get("caption") or "").strip() for item in plan),
    [(item.get("topic"), item.get("caption")) for item in plan])
-reply = core.handle("продолжи")
-plan = dm.get_content_plan()
-ok("после «да» и «продолжи» агент сделал ТЗ",
+ok("после «да» агент сам сделал ТЗ, без отдельной фразы",
    plan and all(item.get("shooting_task_id") for item in plan),
    [(item.get("topic"), item.get("shooting_task_id")) for item in plan])
-ok("итог называет план, подписи и ТЗ", "ТЗ" in reply.text, reply.text)
+ok("итог после «да» называет план, подписи и ТЗ", "ТЗ" in reply.text, reply.text)
+ok("продолжение задачи видно в журнале",
+   {"write_captions", "create_shooting_task"}
+   <= {entry["tool"] for entry in core.journal.list(10)},
+   [entry["tool"] for entry in core.journal.list(10)])
+ok("«нет» в следующий раз не запустит продолжение", core.resume_task == "",
+   core.resume_task)
 
 # --- если модель упёрлась в «готово», цепочка доводится сама ---
 dm, core, stub = build([

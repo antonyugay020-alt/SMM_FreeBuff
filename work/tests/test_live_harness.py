@@ -40,6 +40,14 @@ def answer(system, user):
         task = user.split("Задача пользователя:", 1)[-1].splitlines()[0].strip().lower()
         done = (user.split("Уже сделано:")[-1]
                 .split("Доступные инструменты:")[0].lower())
+        if "подтвердил" in user.lower():
+            # после «да» агент продолжает задачу сам: проверка и ТЗ без новой фразы
+            if "validate_plan" not in done:
+                return json.dumps({"tool": "validate_plan", "args": {}}, ensure_ascii=False)
+            if "create_shooting_task" not in done:
+                return json.dumps({"tool": "create_shooting_task", "args": {}}, ensure_ascii=False)
+            return json.dumps({"action": "done", "say": "Довёл: подписи, проверка и ТЗ."},
+                              ensure_ascii=False)
         if "проверь" in task:
             if "validate_plan" not in done:
                 return json.dumps({"tool": "validate_plan", "args": {}}, ensure_ascii=False)
