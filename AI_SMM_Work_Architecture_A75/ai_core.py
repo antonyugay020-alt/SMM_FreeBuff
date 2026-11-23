@@ -3724,6 +3724,37 @@ class AICore:
         lead = lead.rstrip(".") + "." if lead else ""
         return AIReply(agent._finish_after_plan(gaps, actions, lead), "rules", actions)
 
+    CONFIRM_PLACES = {"content_plan": "контент-плана", "calendar_events": "календаря",
+                      "shooting_tasks": "ТЗ", "post_metrics": "метрик"}
+
+    def _confirm_text(self, tool: str, args: Dict[str, Any]) -> str:
+        """Что именно удаляем — словами: тема и дата, а не id и сырые аргументы."""
+        if tool == "delete_record":
+            section = str(args.get("section") or "")
+            item_id = str(args.get("item_id") or "")
+            place = self.CONFIRM_PLACES.get(section, "списка")
+            item = next((row for row in (self.tools._records(section) or [])
+                         if str(row.get("id")) == item_id), None)
+            if item is None:
+                return f"Удалить запись из {place}?"
+            title = str(item.get("topic") or item.get("title") or item.get("name") or "").strip()
+            date = str(item.get("date") or "").strip()
+            what = " ".join(part for part in (f"«{title}»" if title else "",
+                                              f"от {date}" if date else "") if part)
+            return f"Удалить {what} из {place}?" if what else f"Удалить запись из {place}?"
+        if tool == "delete_material":
+            item_id = str(args.get("item_id") or "")
+            for folder, rows in (self.dm.get_other_files() or {}).items():
+                item = next((row for row in (rows or []) if str(row.get("id")) == item_id), None)
+                if item is None:
+                    continue
+                name = str(item.get("name") or item.get("title") or "").strip()
+                return (f"Убрать «{name}» из списка «{folder}»?" if name
+                        else f"Убрать материал из списка «{folder}»?")
+            return "Убрать материал из списка?"
+        spec = self.registry.get(tool)
+        return f"Выполнить «{spec.description if spec is not None else tool}»?"
+
     def _execute(self, tool: str, args: Dict[str, Any], layer: str) -> AIReply:
         spec = self.registry.get(tool)
         if spec is None:
@@ -3734,8 +3765,7 @@ class AICore:
         if (spec.needs_confirmation and spec.needs_confirmation(args)
                 and layer not in ("confirm", "gui")):
             self.pending = (tool, args)
-            return AIReply(f"План: {tool} с аргументами "
-                           f"{json.dumps(args, ensure_ascii=False)}.\n"
+            return AIReply(f"{self._confirm_text(tool, args)}\n"
                            "Подтвердите: «да» или «нет».",
                            layer, needs_confirmation=True,
                            pending_tool=tool, pending_args=args)

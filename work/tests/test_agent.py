@@ -431,8 +431,12 @@ dm, core, stub = seeded_plan()
 last_id = str(dm.get_content_plan()[-1]["id"])
 reply = core.handle("убери последний пост из плана")
 ok("удаление по фразе просит подтверждение", reply.needs_confirmation, reply.text)
-ok("в вопросе видно, что именно удалят",
-   '"section": "content_plan"' in reply.text and last_id in reply.text, reply.text)
+last_item = dm.get_content_plan()[-1]
+ok("в вопросе тема и дата, а не id",
+   str(last_item["topic"]) in reply.text and str(last_item["date"]) in reply.text
+   and last_id not in reply.text, reply.text)
+ok("сырые аргументы в вопрос не попали",
+   '"section"' not in reply.text and "item_id" not in reply.text, reply.text)
 ok("до «да» ничего не удалено",
    len(dm.get_content_plan()) == 3, len(dm.get_content_plan()))
 core.handle("нет")
@@ -452,9 +456,12 @@ dm._data["calendar_events"] = [
     {"id": "ev_2", "date": "02.04.2027", "title": "Пост 2", "link": "cp_2"}]
 dm._data["shooting_tasks"] = [{"id": "st_1", "plan_id": "cp_1", "title": "ТЗ 1"}]
 dm.save()
-core.handle("удали пост из календаря")
+reply = core.handle("удали пост из календаря")
 ok("удаление из календаря ждёт подтверждения",
    len(dm.get_calendar_events()) == 2, dm.get_calendar_events())
+ok("в вопросе календаря название и дата события",
+   "Пост 2" in reply.text and "02.04.2027" in reply.text and "ev_2" not in reply.text,
+   reply.text)
 core.handle("да")
 ok("удаление из календаря не трогает план",
    len(dm.get_content_plan()) == 3, len(dm.get_content_plan()))
@@ -511,6 +518,8 @@ ok("KPI обновлены из фразы",
 reply = core.handle("убери материал mat_1 из списка")
 ok("удаление материала просит подтверждение",
    reply.needs_confirmation and bool(dm.get_other_files().get("Материалы")), reply.text)
+ok("в вопросе материала имя файла, а не id",
+   "p1.jpg" in reply.text and "mat_1" not in reply.text, reply.text)
 core.handle("да")
 ok("после «да» материал убран из «Материалов»",
    not dm.get_other_files().get("Материалы"), dm.get_other_files())
