@@ -1356,6 +1356,20 @@ class AITools:
                                       "content_plan": before_plan,
                                       "calendar_events": before_events}}}
 
+    def write_captions_would_change(self, args: Dict[str, Any]) -> bool:
+        """Спрашиваем о пачке подписей и о перезаписи готовой.
+
+        Одна подпись в пустую позицию — это то, что человек и просил: платить
+        за одну генерацию без вопроса незачем, готовый текст при этом цел.
+        """
+        plan_id = str(args.get("plan_id") or "")
+        if plan_id:
+            item = self.dm.get_content_plan_item(plan_id)
+            return bool(item and str(item.get("caption") or "").strip())
+        targets = [item for item in self.dm.get_content_plan()
+                   if str(item.get("caption") or "").strip() == ""]
+        return len(targets) > 1
+
     def write_captions(self, plan_id: str = "") -> Dict[str, Any]:
         """Подпись к позиции; без `plan_id` — ко всем позициям, где подписи ещё нет."""
         plan = self.dm.get_content_plan()
@@ -3594,7 +3608,8 @@ class AICore:
                                         {"period_days": int},
                                         self.tools.analyze_performance, read_only=True))
         self.registry.register(ToolSpec("write_captions", "подпись, хэштеги, CTA",
-                                        {"plan_id": str}, self.tools.write_captions))
+                                        {"plan_id": str}, self.tools.write_captions,
+                                        needs_confirmation=lambda a: self.tools.write_captions_would_change(a)))
         self.registry.register(ToolSpec("review_captions",
                                         "редактор по запросу: одна проверка всех подписей, "
                                         "слабые переписывает",
@@ -3817,6 +3832,24 @@ class AICore:
                 return (f"Убрать «{name}» из списка «{folder}»?" if name
                         else f"Убрать материал из списка «{folder}»?")
             return "Убрать материал из списка?"
+        if tool == "write_captions":
+            plan_id = str(args.get("plan_id") or "")
+            if plan_id:
+                item = self.dm.get_content_plan_item(plan_id)
+                targets = [item] if item else []
+            else:
+                targets = [item for item in self.dm.get_content_plan()
+                           if not str(item.get("caption") or "").strip()]
+            names = [str(item.get("topic") or item.get("id") or "").strip() for item in targets]
+            listed = ", ".join(f"«{name}»" for name in names[:5] if name)
+            if len(names) > 5:
+                listed += f" и ещё {len(names) - 5}"
+            if len(targets) == 1:
+                return (f"Переписать подпись «{names[0] if names else plan_id}»? "
+                        "Прежний текст заменится. Это один запрос к модели.")
+            scope = f"подписи ({len(targets)} шт.: {listed})" if listed else "подписи"
+            return (f"Написать {scope}? Это по запросу к модели на каждую подпись; "
+                    "уже готовые подписи не трогаются.")
         if tool == "update_kpis":
             def cleaned(rows):
                 return [row for row in (rows or []) if isinstance(row, dict)

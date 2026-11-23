@@ -67,6 +67,11 @@ def run_task(text):
     before = {entry["id"] for entry in core.journal.list(300)}
     started = time.monotonic()
     reply = core.handle(text)
+    if reply.needs_confirmation:
+        # Подписи и другие опасные операции спрашивают в чате: в живом прогоне
+        # отвечаем «да» и печатаем, о чём именно спросили.
+        print(f"  вопрос: {(reply.text or '').splitlines()[0][:160]}")
+        reply = core.handle("да")
     took = time.monotonic() - started
     tools = [entry["tool"] for entry in core.journal.list(300)
              if entry["id"] not in before]
@@ -80,6 +85,9 @@ def run_task(text):
 strategy_before = len(dm.get_strategy().get("sections") or [])
 print('1. «подготовь кофейне контент на неделю»')
 reply1, took1, tools1 = run_task("подготовь кофейне контент на неделю")
+if any(not item.get("shooting_task_id") for item in dm.get_content_plan()):
+    # после подтверждения подписей задача не идёт дальше сама — ТЗ просим явно
+    core.run_tool("create_shooting_task")
 plan = dm.get_content_plan()
 sections = len(dm.get_strategy().get("sections") or [])
 plan_count = len(plan)
@@ -104,6 +112,9 @@ check("проверка плана выполнена",
 print('\n3. «нужно 5 постов для инстаграма»')
 ids_before3 = {item.get("id") for item in dm.get_content_plan()}
 reply3, took3, tools3 = run_task("нужно 5 постов для инстаграма")
+if any(not item.get("shooting_task_id") for item in dm.get_content_plan()
+       if item.get("id") not in ids_before3):
+    core.run_tool("create_shooting_task")
 fresh3 = [item for item in dm.get_content_plan() if item.get("id") not in ids_before3]
 check("постов стало больше", len(dm.get_content_plan()) > plan_count,
       f"{plan_count} → {len(dm.get_content_plan())}")

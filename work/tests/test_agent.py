@@ -115,18 +115,25 @@ dm, core, stub = build(SCRIPT)
 reply = core.handle("подготовь кофейне контент на неделю")
 print("ответ:", reply.text.replace("\n", " | "))
 ok("работал агент", reply.layer == "agent", reply.layer)
-ok("несколько шагов", len(stub.calls) >= 4, len(stub.calls))
+ok("несколько шагов", len(stub.calls) >= 3, len(stub.calls))
 ok("стратегия создана", len(dm.get_strategy().get("sections") or []) == 2,
    dm.get_strategy())
 plan = dm.get_content_plan()
 ok("план создан", len(plan) == 3, len(plan))
+ok("пачка подписей спрашивает «да/нет»", reply.needs_confirmation, reply.text)
+ok("в вопросе сколько подписей и каких",
+   "3 шт." in reply.text and "Три сорта утреннего фильтра" in reply.text, reply.text)
+ok("до «да» подписей нет",
+   not any(str(item.get("caption") or "").strip() for item in plan),
+   [(item.get("topic"), item.get("caption")) for item in plan])
+ok("до «да» действия задачи видны", len(reply.actions or []) >= 2, len(reply.actions or []))
+reply = core.handle("да")
+plan = dm.get_content_plan()
 ok("подписи у всех постов", all(str(item.get("caption") or "").strip() for item in plan),
    [(item.get("topic"), item.get("caption")) for item in plan])
 tools = [entry["tool"] for entry in core.journal.list(20)]
 ok("шаги в журнале", {"create_strategy", "create_content_plan", "write_captions"} <= set(tools),
    tools)
-ok("итог сказан пользователю", "Готово" in reply.text, reply.text)
-ok("действия можно отменить", len(reply.actions or []) >= 3, len(reply.actions or []))
 ok("шаг агента просит JSON у модели", "json" in stub.formats, stub.formats)
 
 # --- публикацию агент не трогает ---
@@ -276,15 +283,24 @@ dm, core, stub = build([
     '{"action": "done", "say": "Готово: план, подписи и ТЗ."}'])
 reply = core.handle("подготовь кофейне контент на неделю")
 plan = dm.get_content_plan()
-ok("после плана агент дописал подписи",
-   plan and all(str(item.get("caption") or "").strip() for item in plan),
+ok("пачка подписей спрашивает «да/нет», а не пишет молча",
+   reply.needs_confirmation and "2 шт." in reply.text, reply.text)
+ok("до «да» подписей нет",
+   plan and not any(str(item.get("caption") or "").strip() for item in plan),
    [(item.get("topic"), item.get("caption")) for item in plan])
-ok("после плана агент сделал ТЗ",
-   plan and all(item.get("shooting_task_id") for item in plan),
-   [(item.get("topic"), item.get("shooting_task_id")) for item in plan])
 ok("модели сказано, что задача не закончена",
    any("подписей" in text and "write_captions" in text for text in stub.calls),
    stub.calls[-3:-1])
+reply = core.handle("да")
+plan = dm.get_content_plan()
+ok("после плана агент дописал подписи",
+   plan and all(str(item.get("caption") or "").strip() for item in plan),
+   [(item.get("topic"), item.get("caption")) for item in plan])
+reply = core.handle("продолжи")
+plan = dm.get_content_plan()
+ok("после «да» и «продолжи» агент сделал ТЗ",
+   plan and all(item.get("shooting_task_id") for item in plan),
+   [(item.get("topic"), item.get("shooting_task_id")) for item in plan])
 ok("итог называет план, подписи и ТЗ", "ТЗ" in reply.text, reply.text)
 
 # --- если модель упёрлась в «готово», цепочка доводится сама ---
