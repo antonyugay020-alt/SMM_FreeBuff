@@ -199,8 +199,47 @@ ok("подписи написаны и итог сказан",
    and "Готово" in reply.text,
    (reply.text, [item.get("caption") for item in plan_after]))
 ok("после продолжения задача снята с ожидания",
-   core.resume_task == "" and core.resume_steps == [],
-   (core.resume_task, core.resume_steps))
+   core.resume_task == "" and core.resume_steps == [] and core.resume_pending == [],
+   (core.resume_task, core.resume_steps, core.resume_pending))
+
+# --- раннее «готово» после «да» не оставляет план без ТЗ и проверки ---
+class EarlyDone(Stage):
+    """Модель, которая после «да» сразу говорит «готово», не доделав ТЗ."""
+
+    def __init__(self):
+        super().__init__(['{"action": "tool", "tool": "create_content_plan", '
+                          '"args": {"count": 2}}',
+                          '{"action": "tool", "tool": "write_captions", "args": {}}'])
+
+    def chat(self, system, user, temperature=0.2, max_tokens=2048, fmt=""):
+        if "AI SMM Manager" in system and "Пользователь подтвердил" in user:
+            return LLMResult(text='{"action": "done", "say": "Готово: подписи."}',
+                             provider=self.name, model="stub")
+        return super().chat(system, user, temperature, max_tokens, fmt)
+
+
+dm = DataManager("agent", tempfile.mkdtemp(prefix="agent_"))
+stage = EarlyDone()
+core = AICore(dm, {"monthly_budget_usd": 0},
+              app_db_path=Path(tempfile.mkdtemp(prefix="agent_db_")) / "app.db",
+              providers=(stage, None))
+reply = core.handle("подготовь контент")
+plan_before = [str(item.get("id")) for item in dm.get_content_plan()]
+ok("пачка подписей ждёт ответа перед ранним «готово»", reply.needs_confirmation, reply.text)
+ok("незакрытые позиции переданы продолжению",
+   len(core.resume_pending) == 2, core.resume_pending)
+reply = core.handle("да")
+plan_after = dm.get_content_plan()
+ok("план не задвоен и после раннего «готово»",
+   [str(item.get("id")) for item in plan_after] == plan_before, plan_before)
+ok("подписи написаны", all(str(item.get("caption") or "").strip() for item in plan_after),
+   [item.get("caption") for item in plan_after])
+ok("раннее «готово» не оставило план без ТЗ",
+   all(item.get("shooting_task_id") for item in plan_after),
+   [(item.get("topic"), item.get("shooting_task_id")) for item in plan_after])
+ok("проверка плана доделана после продолжения",
+   "Проверка плана" in reply.text, reply.text)
+ok("сказано, что доделал сам", "Довёл до конца сам" in reply.text, reply.text)
 ok("шаг агента просит JSON у модели", "json" in stub.formats, stub.formats)
 
 # --- публикацию агент не трогает ---

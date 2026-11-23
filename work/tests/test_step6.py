@@ -111,11 +111,23 @@ answers["question"] = QMessageBox.No
 plan_section._on_sync()
 assert "отменена" in plan_section.status.text(), plan_section.status.text()
 assert len(dm.get_calendar_events()) == events_before, "«Нет» не должен синхронизировать"
-assert "Без даты 1 из 2" in calls[-1], calls[-1]
+assert any("Без даты 1 из 2" in call for call in calls), calls
 
 answers["question"] = QMessageBox.Yes
 plan_section._on_sync()
 assert len(dm.get_calendar_events()) > events_before, "«Да» должен синхронизировать"
 assert dm.get_content_plan()[0]["status"] == "Запланировано"
 print("SYNC_GATE_OK")
+
+# --- кнопка «Подпись» не переписывает готовую подпись молча ---
+dm._data["content_plan"][0]["caption"] = "Старая подпись"
+dm.save()
+plan_section._current_item_id = lambda: "cp_1"
+answers["question"] = QMessageBox.No
+calls.clear()
+plan_section._on_caption()
+assert plan_section.status.text() == "Подпись не тронута", plan_section.status.text()
+assert dm.get_content_plan_item("cp_1")["caption"] == "Старая подпись"
+assert calls and "уже есть подпись" in calls[-1], calls
+print("CAPTION_GATE_OK")
 print("STEP6_OK")

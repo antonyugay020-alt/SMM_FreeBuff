@@ -2402,11 +2402,14 @@ class AIAgent:
                 f"событий календаря: {len(dm.get_calendar_events())}; "
                 f"ТЗ: {len(dm.get_shooting_tasks())}")
 
-    def run(self, task: str, done: Optional[List[str]] = None) -> Optional[AIReply]:
+    def run(self, task: str, done: Optional[List[str]] = None,
+            pending: Optional[List[str]] = None) -> Optional[AIReply]:
         """Выполнить задачу шагами. None — модель не умеет вести агент, нужен обычный слой.
 
         `done` — шаги, уже сделанные до паузы на подтверждении: без них модель
         начинает задачу с нуля и повторяет создание плана или подписей.
+        `pending` — позиции, по которым задача ещё не закрыта (нет подписи или
+        ТЗ): «готово» после продолжения не принимается, пока они не доделаны.
         """
         provider = self._provider()
         if provider is None:
@@ -2417,7 +2420,7 @@ class AIAgent:
         allowed = {name for name in self.registry.names() if name not in AGENT_DENY}
         nudged = False
         finish_nudged = False
-        new_ids: List[str] = []
+        new_ids: List[str] = list(pending or [])
         first_say = ""
         unknown: List[str] = []
         for step in range(AGENT_STEPS):
@@ -2490,6 +2493,7 @@ class AIAgent:
                 # операция просит подтверждения — останавливаемся и передаём вопрос человеку
                 self.core.resume_task = task
                 self.core.resume_steps = list(history)
+                self.core.resume_pending = list(new_ids)
                 return AIReply(reply.text, "agent",
                                list(actions) + list(reply.actions or []),
                                needs_confirmation=True, pending_tool=reply.pending_tool,
@@ -3575,6 +3579,7 @@ class AICore:
         # Агентская задача, прерванная подтверждением: «да» доделывает её до конца.
         self.resume_task: str = ""
         self.resume_steps: List[str] = []
+        self.resume_pending: List[str] = []
 
     # --- setup ---
     def _register_tools(self) -> None:
@@ -3715,6 +3720,7 @@ class AICore:
                 self.pending = None
                 self.resume_task = ""
                 self.resume_steps = []
+                self.resume_pending = []
                 return AIReply("Отменил, ничего не записал.")
             # Вместо «да»/«нет» пришла другая фраза: операция не выполняется
             # и человеку сказано об этом прямо, а не молча.
@@ -3722,6 +3728,7 @@ class AICore:
             self.pending = None
             self.resume_task = ""
             self.resume_steps = []
+            self.resume_pending = []
             spec = self.registry.get(tool)
             what = spec.description if spec is not None else tool
             return AIReply(f"Отменил «{what}»: вместо «да» или «нет» пришла другая фраза. "
@@ -3759,19 +3766,26 @@ class AICore:
         """
         task = self.resume_task
         steps = list(self.resume_steps)
+        pending = list(self.resume_pending)
         self.resume_task = ""
         self.resume_steps = []
+        self.resume_pending = []
         if not task:
             return reply
         spec = self.registry.get(tool)
         what = spec.description if spec is not None else tool
         note = (f"{task}\nПользователь подтвердил «{what}» — шаг выполнен. "
                 "Продолжай задачу с текущего состояния проекта и не повторяй уже сделанное.")
-        more = self._agent().run(note, done=steps)
+        more = self._agent().run(note, done=steps, pending=pending)
         if more is None:
             return reply
         text = "\n".join(part for part in ((reply.text or "").strip(),
                                             (more.text or "").strip()) if part)
+        # Проверка плана — дешёвая и без модели: после продолжения она должна быть.
+        check = self._execute("validate_plan", {}, "agent")
+        line = (check.text or "").strip().splitlines()[0] if check.text else ""
+        if line:
+            text = f"{text}\nПроверка плана: {line}"
         actions = list(reply.actions or []) + list(more.actions or [])
         self._remember("да", text)
         if more.needs_confirmation:

@@ -87,7 +87,13 @@ assert len(events) == 1 and events[0]["title"] == "С датой"
 seen.pop("title", None)
 dm3._data["content_plan"] = [{"id": "cp_3", "date": "06.12.2026", "topic": "Ок", "status": "Черновик"}]
 dm3.save()
+before = len(dm3.get_calendar_events())
+seen["answer"] = QMessageBox.No
 section._on_sync()
-assert "title" not in seen, "лишний диалог без позиций без даты"
+assert "title" in seen and "новых событий" in seen["text"], seen
+assert len(dm3.get_calendar_events()) == before, "«Нет» в кнопке не пишет в календарь"
+seen["answer"] = QMessageBox.Yes
+section._on_sync()
+assert len(dm3.get_calendar_events()) == before + 1, dm3.get_calendar_events()
 print("SYNC_GATE_OK")
 print("PREVIEW_OK")

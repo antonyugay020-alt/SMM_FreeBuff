@@ -493,6 +493,8 @@ class ContentPlanSection(DataSection):
     def _generate_caption(self, item_id: str) -> Callable[[], str]:
         """Подпись от ИИ для диалога: пишем через журнал и возвращаем готовый текст."""
         def run() -> str:
+            # Кнопка «ИИ» в диалоге — осознанное действие пользователя: подпись
+            # подставляется в поле, откуда её ещё можно не сохранять.
             self.status.setText(self.run("write_captions", plan_id=item_id))
             item = self.dm.get_content_plan_item(item_id) if self.dm else None
             return str((item or {}).get("caption") or "")
@@ -566,8 +568,47 @@ class ContentPlanSection(DataSection):
     def _on_sync(self):
         if not self._confirm_undated():
             return
+        if not self._confirm_sync():
+            return
         self.status.setText(self.run("sync_plan_events"))
         self.refresh()
+
+    def _confirm_sync(self) -> bool:
+        """Кнопка «В календарь» пишет сама — спрашиваем, что именно изменится."""
+        core = self.core()
+        created, planned = (core.tools.sync_plan_events_count()
+                            if core is not None else (0, 0))
+        if not created and not planned:
+            return True
+        parts = []
+        if created:
+            parts.append(f"новых событий: {created}")
+        if planned:
+            parts.append(f"в «Запланировано»: {planned}")
+        answer = QMessageBox.question(
+            self, "В календарь",
+            f"Разложить план по календарю ({', '.join(parts)})?\n\n"
+            "Календарь и статусы позиций изменятся.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if answer == QMessageBox.Yes:
+            return True
+        self.status.setText("Синхронизация отменена")
+        return False
+
+    def _confirm_rewrite_caption(self, item_id: str) -> bool:
+        """Готовая подпись не переписывается молча: у кнопки свой вопрос."""
+        item = self.dm.get_content_plan_item(item_id) if self.dm else None
+        if not str((item or {}).get("caption") or "").strip():
+            return True
+        title = str((item or {}).get("topic") or "поста")
+        answer = QMessageBox.question(
+            self, "Переписать подпись",
+            f"У «{title}» уже есть подпись. Переписать её?\n\nПрежний текст заменится.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer == QMessageBox.Yes:
+            return True
+        self.status.setText("Подпись не тронута")
+        return False
 
     def _on_validate(self):
         lines = [line for line in self.run_full("validate_plan").splitlines()
@@ -592,6 +633,8 @@ class ContentPlanSection(DataSection):
         item_id = self._current_item_id()
         if not item_id:
             QMessageBox.information(self, "Подпись", "Выберите позицию плана.")
+            return
+        if not self._confirm_rewrite_caption(item_id):
             return
         self.status.setText(self.run("write_captions", plan_id=item_id))
         self.refresh()

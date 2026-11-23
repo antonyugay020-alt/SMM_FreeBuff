@@ -279,5 +279,28 @@ class CalendarSection(DataSection):
         self.refresh()
 
     def _on_sync(self):
+        if not self._ask_sync():
+            return
         self.status.setText(self.run("sync_plan_events"))
         self.refresh()
+
+    def _ask_sync(self) -> bool:
+        """Кнопка пишет в календарь — спрашиваем так же, как ядро спрашивает в чате."""
+        core = self.core()
+        created, planned = (core.tools.sync_plan_events_count()
+                            if core is not None else (0, 0))
+        if not created and not planned:
+            return True
+        parts = []
+        if created:
+            parts.append(f"новых событий: {created}")
+        if planned:
+            parts.append(f"в «Запланировано»: {planned}")
+        answer = QMessageBox.question(
+            self, "Синхронизировать календарь",
+            f"Разложить план по календарю ({', '.join(parts)})?\n\nКалендарь изменится.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if answer == QMessageBox.Yes:
+            return True
+        self.status.setText("Синхронизация отменена")
+        return False
